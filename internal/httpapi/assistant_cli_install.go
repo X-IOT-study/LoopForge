@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"agentflow/internal/config"
 	"agentflow/internal/runtime"
 
 	"github.com/gin-gonic/gin"
@@ -57,6 +58,15 @@ func (h *assistantHandlers) answerCLIInstall(c *gin.Context, raw string, start b
 	engine := assistantInstallEngine(raw)
 	if !runtime.OnDemandInstallable(engine) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "这个 CLI 不能从对话里安装"})
+		return
+	}
+	// Local mode does not offer these CLIs, so installing one would only
+	// produce a CLI that every run path then refuses.
+	if !config.LocalModeSupportsExecutor(engine) {
+		c.AbortWithStatusJSON(http.StatusForbidden, gin.H{
+			"error": "本地模式不安装执行器 " + engine + "（本地模式不提供 kimi、zcode）",
+			"code":  config.LocalModeErrorCode,
+		})
 		return
 	}
 	if !start {

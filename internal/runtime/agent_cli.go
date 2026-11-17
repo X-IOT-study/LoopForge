@@ -105,6 +105,19 @@ var agentCLIHostEnv = append([]string{
 	"ZCODE_DATA_BASE_DIR", zcodePersonalFileEnv,
 }, zcodeHostEnv...)
 
+// agentCLIConfigEnv is the platform-owned part of agentCLIHostEnv: the key
+// AgentFlow injects, the model variables derived from it, and the variables
+// that only relocate CLI state. Local mode clears these because they describe
+// AgentFlow's configuration, while the host's own credential variables (host
+// login) must survive. None of them is evidence that the host is logged in.
+var agentCLIConfigEnv = []string{
+	agentCLIKeyEnv,
+	"KIMI_MODEL_NAME", "KIMI_MODEL_API_KEY", "KIMI_MODEL_BASE_URL", "KIMI_MODEL_PROVIDER_TYPE",
+	"OPENCODE_CONFIG", "OPENCODE_CONFIG_CONTENT", "OPENCODE_CONFIG_DIR",
+	"CODEX_HOME", "CLAUDE_CONFIG_DIR", "DSH_HOME", "KIMI_CODE_HOME", "PI_CODING_AGENT_DIR",
+	"ZCODE_DATA_BASE_DIR", zcodePersonalFileEnv, "ZCODE_STORAGE_DIR", "ZCODE_SESSION_DB_PATH",
+}
+
 // agentCLIConfigPaths are the HOME-relative files an agent CLI reads its MCP
 // servers from.
 var agentCLIMCPPaths = map[string]string{
@@ -115,6 +128,24 @@ var agentCLIMCPPaths = map[string]string{
 	AgentCLIPi:          ".pi/agent/mcp.json",
 	AgentCLIDeepSeek:    ".dsh/agentflow-mcp.json",
 	AgentCLIZCode:       zcodeConfigPath,
+}
+
+// agentCLIStateDirs are the host directories CLI providers keep their own
+// login and session state in, relative to the host HOME. Local mode binds the
+// existing ones writable into the sandbox: a read-only bind makes the host CLI
+// fail to refresh its token (EROFS). They are state, never login evidence:
+// local_credentials.go decides whether a provider counts as logged in.
+var agentCLIStateDirs = map[string]string{
+	"codebuddy":         ".codebuddy",
+	"codex":             ".codex",
+	"claude-code":       ".claude",
+	AgentCLIOpenCode:    ".config/opencode",
+	AgentCLICursor:      ".cursor",
+	AgentCLIAntigravity: ".gemini",
+	AgentCLIKimi:        ".kimi-code",
+	AgentCLIPi:          ".pi/agent",
+	AgentCLIDeepSeek:    ".dsh",
+	AgentCLIZCode:       ".zcode",
 }
 
 // AgentCLIMCPOptions shapes the MCP configuration of one invocation.

@@ -242,6 +242,7 @@ New installations listen on all interfaces and target a trusted team. Read the [
 | I want to… | Start here |
 | --- | --- |
 | Deploy, manage accounts, connect execution machines | [Deployment](docs/deployment.md) |
+| Run a single-user instance on your own machine | [Local-only edition](docs/local-mode.md) |
 | Understand chat workspaces, scheduled AI tasks and token pricing | [Conversation workspaces](docs/conversation-workspaces.md) · [AI scheduled tasks](docs/ai-scheduled-task-capabilities.md) · [Token pricing](docs/token-pricing.md) |
 | Install local workflows or choose an edition | [LoopForge Local](docs/local/usage.md) · [Editions](docs/local/editions.md) |
 | Extend the platform or use the HTTP / MCP API | [Architecture](docs/architecture.md) · [API reference](docs/api/README.md) · [Shared schedules API](docs/api/shared-schedules.md) |

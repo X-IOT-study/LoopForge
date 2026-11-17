@@ -8,7 +8,7 @@ window.__AGENTFLOW_APP_DOMAIN__ = document.querySelector('meta[name="agentflow-a
 const knownTime = v => { const d = v ? new Date(v) : null; return d && d.getFullYear() > 1970 ? d : null; };
 const clone = v => v==null ? v : JSON.parse(JSON.stringify(v));
 const state = {
-  data:null, currentUser:null, authRequired:false, currentView:'', analytics:null, workflow:null, workflowSaved:null, workflowDirty:false, selectedNode:null, connectFrom:null, connectCursor:null, activeRun:null,
+  data:null, currentUser:null, authRequired:false, localMode:false, currentView:'', analytics:null, workflow:null, workflowSaved:null, workflowDirty:false, selectedNode:null, connectFrom:null, connectCursor:null, activeRun:null,
   selectedAgent:null, selectedRun:null, selectedRunNode:null, runFilter:'all', runQuery:'', runWorkflowFilter:'',
   selectedIssue:null, projectFilter:'', projectDraft:null, requirementIssueId:null, sourceFilter:'',
   projectAdminDetailId:null, projectAdminTab:'basic', projectAdminQuery:'', projectAdminFilter:'all', projectDraftFor:'', projectDraftBase:null, projectIdentCustom:false, projectIdentSeed:'', projectAdminErrors:{},
@@ -683,6 +683,20 @@ function catalogVisible(projectId,shared){return catalogOwned(projectId)||catalo
 // Generic templates are platform-provided and project independent: every
 // project sees them, but they are read-only blueprints until adopted.
 function isPlatformAdmin(){return !!(state.currentUser&&!state.currentUser.isGuest&&state.currentUser.isPlatformAdmin)}
+// 本地模式隐藏的入口必须与 tech-design §5.1「拒绝项 ↔ 前端入口」一一对应：
+// 视图类入口负责侧栏、深链和设置路由，页面内面板负责市场类开关。
+// index.html 上对应的 data-cloud-only 标注值与本清单同名，applyNavVisibility()
+// 按 state.localMode 统一隐藏，保证清单、DOM 与测试预期不会漂移。
+const LOCAL_MODE_HIDDEN_VIEWS=['bots','platform','runners','guide'];
+const LOCAL_MODE_HIDDEN_PANELS=['aiScheduleMarket','skillhubScope','mcpMarketInstall'];
+function localModeHiddenViews(){return LOCAL_MODE_HIDDEN_VIEWS}
+function localModeHiddenPanels(){return LOCAL_MODE_HIDDEN_PANELS}
+function applyNavVisibility(){
+  // 只做隐藏，不反向显示：skillhub 按钮和 #platformNavGroup 平时由各自逻辑控制
+  // hidden，这里若统一置 false 会破坏原有行为。
+  if(state.localMode)$$('[data-cloud-only]').forEach(el=>{el.hidden=true});
+  renderPlatformNav();
+}
 function canEditGeneric(wf){return catalogGeneric(wf)&&isPlatformAdmin()}
 function catalogGeneric(item){return !!item?.generic}
 // Generic roles live in generic_templates, but the first project that
@@ -881,6 +895,7 @@ async function boot(){
       state.loginUrl = curRes.loginUrl || '';
       state.authRequired = !!curRes.authRequired;
       state.appDomain = curRes.appDomain || (typeof window !== 'undefined' ? window.__AGENTFLOW_APP_DOMAIN__ : '') || '';
+      if(typeof curRes.localMode === 'boolean')state.localMode = curRes.localMode;
     } catch (err) {
       console.warn('[auth] get current user failed:', err);
     }
@@ -897,7 +912,8 @@ async function boot(){
   }
 
   // Explicitly enabled loopback acceptance login is available before protected bootstrap.
-  if(isGuest&&state.authRequired&&['localhost','127.0.0.1','[::1]'].includes(window.location.hostname)){
+  // 本地模式用的是真实密码账号，/api/auth/local 永远关闭，不再探测。
+  if(isGuest&&state.authRequired&&!state.localMode&&['localhost','127.0.0.1','[::1]'].includes(window.location.hostname)){
     const local=await api('/api/auth/local',{silent:true}).catch(()=>({enabled:false}));
     if(local.enabled){
       finishBootLoader();
@@ -912,6 +928,9 @@ async function boot(){
   const view=restoredView();
   const shell = await api('/api/bootstrap', {silent: view==='runs'});
   state.data = Object.assign(state.data, shell);
+  // bootstrap 的 capabilities.localMode 是服务端最终事实，auth/current 不可用时以它为准。
+  if(typeof shell.localMode === 'boolean')state.localMode = shell.localMode;
+  else if(typeof shell.capabilities?.localMode === 'boolean')state.localMode = shell.capabilities.localMode;
   const savedProject=urlParams.get('projectId')||localStorage.getItem('agentflow.activeProject');
   state.projectFilter=(state.data.projects||[]).some(p=>p.id===savedProject)?savedProject:defaultProjectId(state.data.projects);
   state.workflow = clone(restoreOpenWorkflow());
@@ -1582,7 +1601,7 @@ const settingsManagementViews=['settings','assistant','projects','bots','sops','
 const settingsRouteMotion=matchMedia('(prefers-reduced-motion: reduce)');
 let settingsRouteTransition=null;
 let settingsRouteApplying=false;
-function isSettingsManagementView(name){return settingsManagementViews.includes(name)}
+function isSettingsManagementView(name){return !(state.localMode&&localModeHiddenViews().includes(name))&&settingsManagementViews.includes(name)}
 function settingsRouteSurface(name){
   if(isSettingsManagementView(name)){
     const card=$('#settingsSidebar'),nav=card?.querySelector('nav');
@@ -1768,7 +1787,13 @@ function setPlatformRailExpanded(expanded){
   const text=button.querySelector('.rail-label');
   if(text)text.textContent=label;
 }
-function viewTitles(){return {management:'设置',collaboration:'AI 工作台',issues:'需求列表',aiSchedules:'定时任务',bots:'通道管理',assistant:'AI 助手',runs:'运行记录',approvals:'待我确认',sops:'流程模板',flow:'流程设计',agents:'角色定义',mcp:'能力资产',rules:'能力资产',skills:'能力资产',dockerfiles:'环境资产',environments:'环境资产',sandboxes:'环境资产',observability:'统计',projects:'项目配置',platform:'平台管理',runners:'执行机器',settings:'个人配置',access:'访问密钥',guide:'访问密钥'}}
+function viewTitles(){
+  const titles={management:'设置',collaboration:'AI 工作台',issues:'需求列表',aiSchedules:'定时任务',bots:'通道管理',assistant:'AI 助手',runs:'运行记录',approvals:'待我确认',sops:'流程模板',flow:'流程设计',agents:'角色定义',mcp:'能力资产',rules:'能力资产',skills:'能力资产',dockerfiles:'环境资产',environments:'环境资产',sandboxes:'环境资产',observability:'统计',projects:'项目配置',platform:'平台管理',runners:'执行机器',settings:'个人配置',access:'访问密钥',guide:'访问密钥'};
+  // 本地模式没有这些入口：标题表同时是 restoredView/switchView 的合法视图清单，
+  // 删掉后手敲 hash 或旧 localStorage 恢复都会落回工作台。
+  if(state.localMode)localModeHiddenViews().forEach(name=>{delete titles[name]});
+  return titles;
+}
 // 设置侧栏只列一级入口；被合并进同一页的子视图（能力资产、环境资产的类型 Tab，
 // 从流程模板打开的流程设计）按 data-nav-match 高亮它们所属的入口。
 function settingsNavMatches(btn,name){return btn.dataset.view===name||String(btn.dataset.navMatch||'').split(/\s+/).includes(name)}
@@ -1915,6 +1940,8 @@ function switchView(name){
   if(name==='management')name='settings';
   const assetViews=['rules','skills','dockerfiles','environments','sandboxes'];
   const targetView=assetViews.includes(name)?'assets':name;
+  // 本地模式没有的入口手敲 URL 也要兜底；后端 403 只是最后一道防线。
+  if(state.localMode&&localModeHiddenViews().includes(name))name='collaboration';
   if(!titles[name]||!$(`#${targetView}View`)){name='collaboration'}
   // 手敲 #/platform 或者从别的账号留下的 localStorage 恢复进来，都要挡住。
   if(name==='platform'&&!isPlatformAdmin())name='collaboration';
@@ -2006,4 +2033,4 @@ function switchView(name){
   if(name==='guide')renderGuide();
   if(name==='flow'){if(!state.workflow?.nodes?.some(n=>n.id===state.selectedNode))state.selectedNode=null;renderWorkflowMeta();renderCanvas();renderProperties();setFlowView('canvas');refreshGenericWorkflowRoles()}
 }
-function renderAll(){renderUserBadge();renderPlatformNav();renderObsTabs();renderProjectSwitcher();renderIssues();renderSOPCatalog();renderWorkflowMeta();renderCanvas();renderProperties();renderAgents();renderAssets();renderMCPManagement();renderRuns();renderSync();renderProjectAdmin();renderDashboard();renderGuide();updateApprovalBadge();showDirectRunButton($('#flowView').classList.contains('active'))}
+function renderAll(){applyNavVisibility();renderUserBadge();renderObsTabs();renderProjectSwitcher();renderIssues();renderSOPCatalog();renderWorkflowMeta();renderCanvas();renderProperties();renderAgents();renderAssets();renderMCPManagement();renderRuns();renderSync();renderProjectAdmin();renderDashboard();renderGuide();updateApprovalBadge();showDirectRunButton($('#flowView').classList.contains('active'))}

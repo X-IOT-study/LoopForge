@@ -93,7 +93,8 @@ function sopRunRequirements(w){
     const role=(state.data?.agents||[]).find(a=>a.id===node.agentId);
     const id=role?.executorId||node.executorId||'codebuddy';
     const kind=(state.data?.executors||[]).find(e=>e.id===id)?.kind||id;
-    if(['codebuddy','codex','claude','claude-code','opencode','cursor','agy','kimi','pi','dsh','zcode'].includes(kind))providers.add(kind==='claude'?'claude-code':kind);
+    const provider=kind==='claude'?'claude-code':kind;
+    if(['codebuddy','codex','claude','claude-code','opencode','cursor','agy','kimi','pi','dsh','zcode'].includes(kind)&&!localModeExecutorHidden(provider))providers.add(provider);
   }
   const agentLabels={opencode:'OpenCode',cursor:'Cursor CLI',agy:'Antigravity',kimi:'Kimi Code',pi:'Pi',dsh:'DeepSeek Harness',zcode:'ZCode'};
   for(const kind of providers){

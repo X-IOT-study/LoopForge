@@ -3,6 +3,8 @@
 // 所以启动后和进入相关页面时都要保证加载过一次；失败时允许下次重试。
 let mcpMarketCatalogRequest=null;
 function ensureMCPMarketCatalog(){
+  // 本地模式没有平台市场，启动和无网络都不该请求 /api/mcp-market。
+  if(state.localMode)return Promise.resolve([]);
   if((state.mcpMarket||[]).length)return Promise.resolve(state.mcpMarket);
   if(!mcpMarketCatalogRequest){
     mcpMarketCatalogRequest=api('/api/mcp-market',{silent:true})
@@ -36,6 +38,7 @@ function mcpCatalogSuggestionsHTML(installed,query){
   return `<section class="mcp-catalog-suggest" aria-label="平台目录"><div><b>平台目录</b><span>通用模板按名称绑定这些 MCP，添加到本项目后即可使用。</span></div><div class="mcp-catalog-actions">${items.map(item=>`<button class="button ghost small" type="button" data-mcp-install="${escapeHTML(item.id)}">＋ ${escapeHTML(item.name)}</button>`).join('')}</div></section>`;
 }
 async function installMarketMCP(marketId,button){
+  if(state.localMode)return toast('本地模式不支持 MCP 市场');
   if(!state.projectFilter)return toast('请先选择项目');
   button.disabled=true;const label=button.textContent;button.textContent='添加中…';
   try{

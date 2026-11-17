@@ -136,7 +136,7 @@ function renderRunnersView(){
   }
   list.innerHTML=runners.map(r=>{
     const isDefault=r.id===defaultId;
-    const discoveredCLIs=(r.runtimes||[]).filter(rt=>runnerCLILabels[rt.provider]);
+    const discoveredCLIs=(r.runtimes||[]).filter(rt=>runnerCLILabels[rt.provider]&&!localModeExecutorHidden(rt.provider));
     const cliRows=discoveredCLIs.map(rt=>{
       const authMode=rt.authMode||(rt.provider==='codebuddy'?'personal':'local');
       const credentialReady=runnerPersonalCredentialConfigured(rt.provider);

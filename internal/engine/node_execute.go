@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"agentflow/internal/config"
 	"agentflow/internal/domain"
 	"agentflow/internal/gitwork"
 	"agentflow/internal/repo"
@@ -213,6 +214,12 @@ func resolveNodeExecutor(st *repo.Store, node domain.WorkflowNode, agent domain.
 	}
 	if !found {
 		return domain.ExecutorDefinition{}, fmt.Errorf("executor %q not found (agent %s)", executorID, agent.ID)
+	}
+	// Every run resolves its executor here, so this is the last stop for a
+	// workflow that still pins a CLI the current mode withdrew (local mode
+	// has no kimi/zcode); roles and templates are already rejected earlier.
+	if kind := strings.TrimSpace(ex.Kind); !config.LocalModeSupportsExecutor(kind) {
+		return domain.ExecutorDefinition{}, fmt.Errorf("本地模式不支持执行器 %s（角色 %s）", kind, agent.ID)
 	}
 	if strings.TrimSpace(agent.Model) != "" {
 		ex.Model = agent.Model

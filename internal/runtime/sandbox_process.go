@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 
+	"agentflow/internal/config"
 	"agentflow/internal/domain"
 )
 
@@ -148,13 +149,10 @@ func appendEnvironment(base []string, overlays ...map[string]string) []string {
 }
 
 func controlledBaseEnvironment(base []string) []string {
+	// Platform plumbing is stripped for every child. The host's own provider
+	// credentials are stripped too, except in local mode where the machine's
+	// CLIs are meant to keep using their existing login.
 	blocked := []string{
-		"CODEBUDDY_API_KEY=",
-		"OPENAI_API_KEY=", "CODEX_API_KEY=", "OPENAI_BASE_URL=",
-		"ANTHROPIC_API_KEY=", "ANTHROPIC_AUTH_TOKEN=", "ANTHROPIC_BASE_URL=",
-		"CLAUDE_CODE_OAUTH_TOKEN=", "CODEX_HOME=", "CLAUDE_CONFIG_DIR=",
-		"CLAUDE_CODE_USE_BEDROCK=", "CLAUDE_CODE_USE_VERTEX=", "CLAUDE_CODE_USE_FOUNDRY=",
-		"CODEBUDDY_INTERNET_ENVIRONMENT=",
 		"AGENTFLOW_GIT_TOKEN=",
 		"AGENTFLOW_MCP_CONFIG=",
 		"AGENTFLOW_BIN=",
@@ -167,6 +165,58 @@ func controlledBaseEnvironment(base []string) []string {
 		"GIT_SSH=",
 		"GIT_SSH_COMMAND=",
 		"GIT_SSH_VARIANT=",
+		// Control-plane secrets stay out of every child, in both modes. They are
+		// inherited from os.Environ() (the bootstrap in cmd/agentflow/main.go does
+		// os.Setenv for the session key), so a workspace script could otherwise
+		// read them and forge session cookies or reach the database.
+		//
+		// Filtering only affects the inherited base: the overlay is applied later
+		// by appendEnvironment (sandbox_process.go:131-141, values[key] =
+		// overlay), and the local/process sandboxes append command.environment
+		// after the base (sandbox_local.go:54, sandbox_process.go:291). That is
+		// how AGENTFLOW_GIT_TOKEN is blocked here yet re-injected by
+		// command_binding.go:412, and the same holds for AGENTFLOW_CLI_API_KEY
+		// (agent_cli.go:435), AGENTFLOW_RUN_ID/AGENTFLOW_NODE_ID
+		// (command_binding.go:254, hooks.go:369), AGENTFLOW_REPOSITORIES_JSON
+		// (hooks.go:34), AGENTFLOW_HOOK_OUTPUT (command_binding.go:240,
+		// daemon.go:899) and AGENTFLOW_WORKSPACE (hooks.go:188).
+		"AGENTFLOW_SESSION_SECRET=",
+		"AGENTFLOW_MYSQL_DSN=",
+		"AGENTFLOW_WORKER_CONTROL_TOKEN=",
+		"AGENTFLOW_CONTROL_TOKEN=",
+		"AGENTFLOW_PLATFORM_MCP_TOKEN=",
+		"AGENTFLOW_RUNNER_BOOTSTRAP_TOKEN=",
+		"AGENTFLOW_MCP_CALL_TOKEN=",
+		"AGENTFLOW_API_TOKEN=",
+		"LOOPFORGE_DB_PASSWORD=",
+		"LOOPFORGE_DB_ROOT_PASSWORD=",
+		"LOOPFORGE_MYSQL_DSN=",
+		// Gateway identity signing, SSO/robot/MCP credentials, git HTTP
+		// passwords, notification webhooks and the legacy SESSION_SECRET name are
+		// parent-side only. AGENTFLOW_GIT_HTTP_PASSWORD is injected per run
+		// through the overlay (gitwork/auth.go:105) and already stripped from
+		// inherited env there (gitwork/auth.go:129), so filtering it here keeps
+		// that contract. AGENTFLOW_API_KEY has no child consumer (it is not the
+		// CLI key; that one is AGENTFLOW_CLI_API_KEY, which stays inherited).
+		"AGENTFLOW_IDENTITY_HEADER_SECRET=",
+		"AGENTFLOW_GONGFENG_OAUTH_CLIENT_SECRET=",
+		"AGENTFLOW_MCP_TOKEN=",
+		"AGENTFLOW_INSIGHT_TOKEN=",
+		"AGENTFLOW_GIT_HTTP_PASSWORD=",
+		"AGENTFLOW_DATABASE_URL=",
+		"AGENTFLOW_API_KEY=",
+		"SESSION_SECRET=",
+		"AGENTFLOW_NOTIFICATION_URL__",
+	}
+	if !config.LocalMode() {
+		blocked = append(blocked, []string{
+			"CODEBUDDY_API_KEY=",
+			"OPENAI_API_KEY=", "CODEX_API_KEY=", "OPENAI_BASE_URL=",
+			"ANTHROPIC_API_KEY=", "ANTHROPIC_AUTH_TOKEN=", "ANTHROPIC_BASE_URL=",
+			"CLAUDE_CODE_OAUTH_TOKEN=", "CODEX_HOME=", "CLAUDE_CONFIG_DIR=",
+			"CLAUDE_CODE_USE_BEDROCK=", "CLAUDE_CODE_USE_VERTEX=", "CLAUDE_CODE_USE_FOUNDRY=",
+			"CODEBUDDY_INTERNET_ENVIRONMENT=",
+		}...)
 	}
 	filtered := make([]string, 0, len(base))
 	for _, entry := range base {
@@ -318,6 +368,9 @@ type resolvedCLIState struct {
 	files []string
 }
 
+// agentStateDirectories resolves the CLI state requirements of one invocation:
+// exactly the CLI selected for this run. Docker keeps that scope verbatim, so
+// the local-mode host extension below never widens what a container mounts.
 func agentStateDirectories(requirements SandboxRequirements) ([]resolvedCLIState, error) {
 	states := append([]CLIStateRequirement(nil), requirements.CLIStates...)
 	if len(states) == 0 {
@@ -327,7 +380,8 @@ func agentStateDirectories(requirements SandboxRequirements) ([]resolvedCLIState
 	if err != nil {
 		return nil, err
 	}
-	result := make([]resolvedCLIState, 0, len(states))
+	names := make([]string, 0, len(states))
+	files := map[string][]string{}
 	seen := map[string]bool{}
 	for _, state := range states {
 		name := strings.TrimSpace(state.Directory)
@@ -335,7 +389,89 @@ func agentStateDirectories(requirements SandboxRequirements) ([]resolvedCLIState
 			continue
 		}
 		seen[name] = true
-		result = append(result, resolvedCLIState{path: filepath.Join(home, name), files: append([]string(nil), state.Files...)})
+		names = append(names, name)
+		files[name] = append([]string(nil), state.Files...)
+	}
+	result := make([]resolvedCLIState, 0, len(names))
+	for _, name := range names {
+		result = append(result, resolvedCLIState{path: filepath.Join(home, filepath.FromSlash(name)), files: files[name]})
+	}
+	return result, nil
+}
+
+// localHostStateFiles are the HOME-relative regular files some host CLIs
+// rewrite in place beside their state directory instead of inside it. bwrap
+// mounts / read-only, so each one needs its own writable file-level bind:
+// claude rewrites ~/.claude.json on every run and hits EROFS without it. The
+// names match the files the docker path already mounts (taskSandboxSpec's
+// CLIStates). The macOS seatbelt profile only allows directory-level writes, so
+// it does not bind these files; that limitation is documented as such.
+var localHostStateFiles = map[string][]string{
+	".claude":    {".claude.json"},
+	".codebuddy": {".codebuddy.json"},
+}
+
+// localStateFiles merges the requirement files of state with the host files
+// that live beside its directory, keeping the first spelling of each name.
+func localStateFiles(state resolvedCLIState) []string {
+	files := append([]string(nil), state.files...)
+	seen := make(map[string]bool, len(files))
+	for _, name := range files {
+		seen[name] = true
+	}
+	for _, name := range localHostStateFiles[filepath.Base(state.path)] {
+		if seen[name] {
+			continue
+		}
+		seen[name] = true
+		files = append(files, name)
+	}
+	return files
+}
+
+// localHostStateDirectories extends agentStateDirectories with the host CLI
+// state directories that host-process drivers must bind writable in local
+// mode: the machine's own CLIs keep their login and session state there, and a
+// read-only bind makes a token refresh fail with EROFS.
+//
+// Only bwrap and seatbelt call this. Docker intentionally keeps the strict
+// agentStateDirectories scope: mounting every host CLI home writable into a
+// container turns one selected CLI into a pile of host credentials the run
+// never asked for, and container semantics were never host-first. A missing
+// directory is dropped by the driver that binds it.
+func localHostStateDirectories(requirements SandboxRequirements) ([]resolvedCLIState, error) {
+	states, err := agentStateDirectories(requirements)
+	if err != nil || !config.LocalMode() {
+		return states, err
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil, err
+	}
+	seen := make(map[string]bool, len(states))
+	for _, state := range states {
+		rel, relErr := filepath.Rel(home, state.path)
+		if relErr != nil {
+			continue
+		}
+		seen[filepath.ToSlash(rel)] = true
+	}
+	names := make([]string, 0, len(agentCLIStateDirs))
+	for kind := range agentCLIStateDirs {
+		names = append(names, kind)
+	}
+	sort.Strings(names)
+	result := append(make([]resolvedCLIState, 0, len(states)+len(names)), states...)
+	for _, kind := range names {
+		name := agentCLIStateDirs[kind]
+		if seen[name] {
+			continue
+		}
+		seen[name] = true
+		result = append(result, resolvedCLIState{path: filepath.Join(home, filepath.FromSlash(name))})
+	}
+	for i := range result {
+		result[i].files = localStateFiles(result[i])
 	}
 	return result, nil
 }
@@ -359,11 +495,14 @@ func seatbeltProfileCommand(workspace string, requirements SandboxRequirements, 
 	for _, temp := range seatbeltWritableTemps() {
 		fmt.Fprintf(&b, "(allow file-write* (subpath %s))\n", strconv.Quote(temp))
 	}
-	stateDirs, err := agentStateDirectories(requirements)
+	stateDirs, err := localHostStateDirectories(requirements)
 	if err != nil {
 		return "", err
 	}
 	for _, state := range stateDirs {
+		// Directory-level only: seatbelt has no file-level writable bind, so the
+		// state files beside it (e.g. ~/.claude.json) stay read-only on macOS.
+		// That is a documented limitation, not a TODO.
 		fmt.Fprintf(&b, "(allow file-write* (subpath %s))\n", strconv.Quote(state.path))
 	}
 	b.WriteString("(allow file-write* (literal \"/dev/null\"))\n")
@@ -448,7 +587,7 @@ func bwrapArgsCommand(workspace string, requirements SandboxRequirements, maskAg
 	if requirements.BunFS && ensureBunFSMountPoint() {
 		args = append(args, "--tmpfs", bunFSMountPoint)
 	}
-	stateDirs, err := agentStateDirectories(requirements)
+	stateDirs, err := localHostStateDirectories(requirements)
 	if err != nil {
 		return nil, err
 	}
@@ -457,6 +596,28 @@ func bwrapArgsCommand(workspace string, requirements SandboxRequirements, maskAg
 			args = append(args, "--bind", state.path, state.path)
 		} else if statErr != nil && !os.IsNotExist(statErr) {
 			return nil, statErr
+		}
+		// Files beside the state directory (e.g. ~/.claude.json) are siblings, the
+		// same layout the docker driver mounts. "--ro-bind / /" makes them
+		// read-only while the CLI rewrites them in place, so local mode binds each
+		// existing regular file writable. A missing file or parent is skipped.
+		// Platform mode keeps its previous argument list byte for byte.
+		if !config.LocalMode() {
+			continue
+		}
+		for _, name := range state.files {
+			path := filepath.Join(filepath.Dir(state.path), filepath.FromSlash(name))
+			info, statErr := os.Stat(path)
+			if statErr != nil {
+				if os.IsNotExist(statErr) {
+					continue
+				}
+				return nil, statErr
+			}
+			if !info.Mode().IsRegular() {
+				continue
+			}
+			args = append(args, "--bind", path, path)
 		}
 	}
 	if maskAgentConfig {

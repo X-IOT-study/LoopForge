@@ -1,12 +1,15 @@
 package runtime
 
 import (
-	"agentflow/internal/observability"
 	"fmt"
 	"net/url"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+
+	"agentflow/internal/config"
+	"agentflow/internal/observability"
 )
 
 func upsertEnv(env []string, key, value string) []string {
@@ -38,13 +41,22 @@ func bindCommand(sandbox Sandbox, workspace string, command CommandSpec, credent
 	for key, value := range command.environment {
 		bound.environment[key] = value
 	}
+	local := config.LocalMode()
 	// Known host credentials are cleared for every child by default. A provider
-	// receives them only by explicitly requesting a controlled binding.
-	bound.environment["CODEBUDDY_API_KEY"] = ""
-	bound.environment["CODEBUDDY_INTERNET_ENVIRONMENT"] = ""
+	// receives them only by explicitly requesting a controlled binding. Local
+	// mode is the exception: the machine's own CLI logins and keys must survive,
+	// so only AgentFlow's own plumbing is cleared.
 	bound.environment["AGENTFLOW_GIT_TOKEN"] = ""
-	for _, key := range []string{"OPENAI_API_KEY", "CODEX_API_KEY", "OPENAI_BASE_URL", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL", "CLAUDE_CODE_OAUTH_TOKEN", "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY"} {
-		bound.environment[key] = ""
+	if local {
+		for key, value := range LocalCredentialEnvironments(command.Provider) {
+			bound.environment[key] = value
+		}
+	} else {
+		bound.environment["CODEBUDDY_API_KEY"] = ""
+		bound.environment["CODEBUDDY_INTERNET_ENVIRONMENT"] = ""
+		for _, key := range []string{"OPENAI_API_KEY", "CODEX_API_KEY", "OPENAI_BASE_URL", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL", "CLAUDE_CODE_OAUTH_TOKEN", "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY"} {
+			bound.environment[key] = ""
+		}
 	}
 	if command.Provider == "codebuddy" {
 		// Every conversation and workspace gets its own CLI home, and CodeBuddy
@@ -54,7 +66,9 @@ func bindCommand(sandbox Sandbox, workspace string, command CommandSpec, credent
 	}
 	// Validate every private-home component before any credential binding can
 	// write configuration. The sandbox may have replaced a parent with a symlink.
-	if command.PrivateHome {
+	// Local mode keeps the host HOME: an empty private home would hide the CLI's
+	// own login state.
+	if command.PrivateHome && !local {
 		provider := PrivateHomeName(command)
 		hostHome, err := EnsureControlDirectory(workspace, "private-home", provider)
 		if err != nil {
@@ -82,9 +96,26 @@ func bindCommand(sandbox Sandbox, workspace string, command CommandSpec, credent
 			bound.environment[key] = filepath.ToSlash(filepath.Join(bound.environment["HOME"], dir))
 		}
 	}
+	if local {
+		// Keep the host HOME end to end: any private home would hide the host
+		// CLI's own login state, so the sandbox must not see PrivateHome set.
+		// WithPrivateHomeDir callers set their own HOME before this point and are
+		// unaffected.
+		bound.PrivateHome = false
+	}
 	for _, binding := range command.CredentialBindings {
 		switch binding {
 		case BindCodeBuddy:
+			if local {
+				// Host login first (the passed-through CODEBUDDY_API_KEY or the
+				// host's own CLI state). Without either, fail readably instead of
+				// letting the CLI report an authentication error inside the sandbox.
+				if bound.environment["CODEBUDDY_API_KEY"] == "" && !LocalCLILoginAvailable(command.Provider) {
+					return CommandSpec{}, LocalCredentialHint(command.Provider)
+				}
+				bound.environment["CODEBUDDY_INTERNET_ENVIRONMENT"] = strings.TrimSpace(credentials.CodeBuddy.InternetEnvironment)
+				continue
+			}
 			// Empty values are intentional: a responsible user without credentials must
 			// not inherit either variable from the AgentFlow host process.
 			bound.environment["CODEBUDDY_API_KEY"] = strings.TrimSpace(credentials.CodeBuddy.APIKey)
@@ -102,6 +133,26 @@ func bindCommand(sandbox Sandbox, workspace string, command CommandSpec, credent
 			}
 			bound.Argv = BindMCPCallArgv(sandbox, bound.Argv)
 		case BindCodex:
+			if local {
+				// Host login or the host's OPENAI/CODEX key wins; a personal key only
+				// fills the gap.
+				if LocalCLILoginAvailable(command.Provider) {
+					continue
+				}
+				key := strings.TrimSpace(credentials.Codex.APIKey)
+				if key == "" {
+					// No host login and no personal key: fail readably instead of
+					// letting the CLI report its own "not logged in".
+					return CommandSpec{}, LocalCredentialHint(command.Provider)
+				}
+				bound.environment["CODEX_API_KEY"] = key
+				argv, err := CodexUserProviderArgv(bound.Argv, credentials.Codex.BaseURL)
+				if err != nil {
+					return CommandSpec{}, err
+				}
+				bound.Argv = argv
+				continue
+			}
 			bound.environment["CODEX_API_KEY"] = strings.TrimSpace(credentials.Codex.APIKey)
 			if bound.environment["CODEX_API_KEY"] == "" {
 				return CommandSpec{}, fmt.Errorf("需求责任人未配置 Codex API Key，请在个人配置中配置")
@@ -112,24 +163,61 @@ func bindCommand(sandbox Sandbox, workspace string, command CommandSpec, credent
 			}
 			bound.Argv = argv
 		case BindClaudeCode:
+			if local {
+				if LocalCLILoginAvailable(command.Provider) {
+					continue
+				}
+				key := strings.TrimSpace(credentials.ClaudeCode.APIKey)
+				if key == "" {
+					// No host login and no personal key: fail readably instead of
+					// letting the CLI report its own "not logged in".
+					return CommandSpec{}, LocalCredentialHint(command.Provider)
+				}
+				bound.environment["ANTHROPIC_API_KEY"] = key
+				bound.environment["ANTHROPIC_BASE_URL"] = claudeCodeBaseURL(credentials.ClaudeCode.BaseURL)
+				continue
+			}
 			bound.environment["ANTHROPIC_API_KEY"] = strings.TrimSpace(credentials.ClaudeCode.APIKey)
 			if bound.environment["ANTHROPIC_API_KEY"] == "" {
 				return CommandSpec{}, fmt.Errorf("需求责任人未配置 Claude Code API Key，请在个人配置中配置")
 			}
-			baseURL := strings.TrimSpace(credentials.ClaudeCode.BaseURL)
-			if baseURL == "" {
-				baseURL = "https://api.anthropic.com"
-			}
-			bound.environment["ANTHROPIC_BASE_URL"] = baseURL
+			bound.environment["ANTHROPIC_BASE_URL"] = claudeCodeBaseURL(credentials.ClaudeCode.BaseURL)
 		case BindAgentCLI:
+			if local && LocalCLILoginAvailable(command.Provider) {
+				// Host CLI login first: keep its environment and state untouched.
+				// The platform's own configuration variables stay cleared.
+				for _, key := range agentCLIConfigEnv {
+					bound.environment[key] = ""
+				}
+				continue
+			}
+			if local && strings.TrimSpace(credentials.AgentCLI[command.Provider].APIKey) == "" {
+				// Without a host login or a personal key the CLI runs on its own
+				// state; an unknown-strength provider must not fail the node.
+				if LocalCredentialStrength(command.Provider) != LocalCredentialUnknown {
+					return CommandSpec{}, LocalCredentialHint(command.Provider)
+				}
+				for _, key := range agentCLIConfigEnv {
+					bound.environment[key] = ""
+				}
+				continue
+			}
 			var home AgentCLIHome
 			homeEnv := bound.environment["HOME"]
-			if command.PrivateHome {
+			if command.PrivateHome && !local {
 				home = WorkspaceAgentCLIHome(workspace, PrivateHomeName(command))
 			} else {
 				homeEnv = command.environment["HOME"]
 				if strings.TrimSpace(homeEnv) == "" {
-					return CommandSpec{}, fmt.Errorf("%s 需要独立的 HOME 目录", AgentCLILabel(command.Provider))
+					if local {
+						hostHome, err := os.UserHomeDir()
+						if err != nil {
+							return CommandSpec{}, err
+						}
+						homeEnv = hostHome
+					} else {
+						return CommandSpec{}, fmt.Errorf("%s 需要独立的 HOME 目录", AgentCLILabel(command.Provider))
+					}
 				}
 				home = HostAgentCLIHome(homeEnv)
 			}
@@ -199,6 +287,15 @@ func CodexUserProviderArgv(argv []string, baseURL string) ([]string, error) {
 	out = append(out, argv[:len(argv)-1]...)
 	out = append(out, config...)
 	return append(out, argv[len(argv)-1]), nil
+}
+
+// claudeCodeBaseURL normalizes an owner-supplied Anthropic-compatible endpoint,
+// falling back to the official host.
+func claudeCodeBaseURL(baseURL string) string {
+	if baseURL = strings.TrimSpace(baseURL); baseURL != "" {
+		return baseURL
+	}
+	return "https://api.anthropic.com"
 }
 
 // PrivateHomeName is the directory under .agentflow/private-home that a

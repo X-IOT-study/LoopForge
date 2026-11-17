@@ -3,6 +3,7 @@ package httpapi
 import (
 	"net/http"
 
+	"agentflow/internal/config"
 	"agentflow/internal/domain"
 	"agentflow/internal/runtime"
 
@@ -56,9 +57,31 @@ func effortOptions(levels []string) []executorEffortOption {
 	return options
 }
 
-// executorModelCatalogs returns the fixed per-CLI catalog. The CodeBuddy list
-// reuses the assistant catalog so the wizard, AI 助手 and 澄清 stay in sync.
+// executorModelCatalogs returns the per-CLI catalog minus the CLIs the current
+// mode cannot run, so the wizard, AI 助手 and 澄清 only offer models of a CLI
+// that can actually start here.
 func executorModelCatalogs() map[string]executorModelCatalog {
+	catalogs := allExecutorModelCatalogs()
+	if !config.LocalMode() {
+		return catalogs
+	}
+	for key := range catalogs {
+		// Catalog keys follow the executor id, and Claude's id ("claude")
+		// differs from its CLI kind ("claude-code") the switch is defined on.
+		kind := key
+		if key == "claude" {
+			kind = "claude-code"
+		}
+		if !config.LocalModeSupportsExecutor(kind) {
+			delete(catalogs, key)
+		}
+	}
+	return catalogs
+}
+
+// allExecutorModelCatalogs returns the fixed per-CLI catalog. The CodeBuddy list
+// reuses the assistant catalog so the wizard, AI 助手 and 澄清 stay in sync.
+func allExecutorModelCatalogs() map[string]executorModelCatalog {
 	codebuddyModels := make([]executorModelInfo, 0)
 	known := assistantKnownCatalog()
 	for _, model := range known.Models {

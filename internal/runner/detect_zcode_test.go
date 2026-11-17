@@ -13,11 +13,13 @@ func zcodeRuntime(t *testing.T, script string) (domain.RunnerRuntime, bool) {
 	t.Helper()
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	t.Setenv("PATH", "/usr/bin:/bin")
 	bin := filepath.Join(home, ".local", "bin")
 	if err := os.MkdirAll(bin, 0o755); err != nil {
 		t.Fatal(err)
 	}
+	// The stub must win the PATH lookup: on some machines /usr/bin/zcode is the
+	// ZCode desktop app, and probing it would test that app, not this script.
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+"/usr/bin:/bin")
 	if err := os.WriteFile(filepath.Join(bin, "zcode"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}

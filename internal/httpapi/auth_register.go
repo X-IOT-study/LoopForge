@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"agentflow/internal/config"
 	"agentflow/internal/domain"
 	"agentflow/internal/repo"
 	"errors"
@@ -23,7 +24,11 @@ var (
 
 // signupEnabled reports whether visitors may create accounts after the first
 // administrator exists. Defaults to on; public deployments should disable it.
+// A local-mode instance has exactly one account, so it never accepts signups.
 func signupEnabled() bool {
+	if config.LocalMode() {
+		return false
+	}
 	switch strings.ToLower(strings.TrimSpace(os.Getenv("AGENTFLOW_ALLOW_SIGNUP"))) {
 	case "0", "false", "no", "off":
 		return false
@@ -33,7 +38,14 @@ func signupEnabled() bool {
 
 func (h *authHandlers) authSetup(c *gin.Context) {
 	needsSetup := h.repo != nil && h.repo.LocalAccountCount() == 0
-	c.JSON(http.StatusOK, gin.H{"needsSetup": needsSetup, "signupEnabled": needsSetup || signupEnabled()})
+	// Local mode has no self-service signup at all: the page shows the
+	// first-run password form and nothing else.
+	localMode := config.LocalMode()
+	c.JSON(http.StatusOK, gin.H{
+		"needsSetup":    needsSetup,
+		"signupEnabled": !localMode && (needsSetup || signupEnabled()),
+		"localMode":     localMode,
+	})
 }
 
 const welcomeProjectID = "welcome"
@@ -74,6 +86,11 @@ func (h *authHandlers) authRegister(c *gin.Context) {
 		return
 	}
 	input.Login = strings.TrimSpace(input.Login)
+	// Local mode owns a single fixed account; the client's login name is not
+	// an input at all. Validation, origin and limits still apply.
+	if config.LocalMode() {
+		input.Login = config.LocalModeAdminLogin()
+	}
 	if !loginPattern.MatchString(input.Login) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "用户名需 2–64 位，以字母或数字开头，只能包含字母、数字、_ . -"})
 		return
@@ -96,7 +113,9 @@ func (h *authHandlers) authRegister(c *gin.Context) {
 		return
 	}
 	u, err := h.repo.CreateLocalAccount(input.Login, input.Password, first)
-	if err == nil && !first {
+	// The single local-mode account is the whole tenant, so it joins the demo
+	// project the same way every later account does.
+	if err == nil && (!first || config.LocalMode()) {
 		h.joinWelcomeProject(u.ID)
 	}
 	registerMu.Unlock()

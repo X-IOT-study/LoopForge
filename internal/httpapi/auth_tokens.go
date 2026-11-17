@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"agentflow/internal/auth"
+	"agentflow/internal/config"
 	"agentflow/internal/domain"
 	"agentflow/internal/repo"
 
@@ -142,6 +143,11 @@ func bearerToken(r *http.Request) (string, bool) {
 // AGENTFLOW_PREVIEW_LOCAL_LOGIN=1, authentication is not required, and
 // AGENTFLOW_LOCAL_LOGIN_USER names an existing user.
 func (d deps) previewLocalAuthUser() (*auth.User, bool) {
+	// Local mode signs in through the single password account, never through
+	// the preview bypass.
+	if config.LocalMode() {
+		return nil, false
+	}
 	if strings.TrimSpace(os.Getenv("AGENTFLOW_PREVIEW_LOCAL_LOGIN")) != "1" || authRequired() || d.repo == nil {
 		return nil, false
 	}

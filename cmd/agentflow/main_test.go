@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -149,5 +150,139 @@ func TestResolveRole(t *testing.T) {
 		if got != want || (err != nil) != (want == "") {
 			t.Fatalf("role %q: %q, %v", input, got, err)
 		}
+	}
+}
+
+// TestLocalSessionSecretCreatesAndReuses covers the ordinary path: the first
+// start mints a key, every later start reads the same one back.
+func TestLocalSessionSecretCreatesAndReuses(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "local", "session.key")
+	first, created, err := localSessionSecret(path)
+	if err != nil || !created {
+		t.Fatalf("first start: created=%v err=%v", created, err)
+	}
+	if len(first) < 32 {
+		t.Fatalf("key looks too short: %q", first)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if perm := info.Mode().Perm(); perm != 0o600 {
+		t.Fatalf("key mode = %04o, want 0600", perm)
+	}
+	second, created, err := localSessionSecret(path)
+	if err != nil || created {
+		t.Fatalf("second start: created=%v err=%v", created, err)
+	}
+	if second != first {
+		t.Fatalf("key changed between starts")
+	}
+}
+
+// TestLocalSessionSecretRefusesSymlink makes sure a planted symlink cannot
+// redirect the signing key to a file the operator does not control.
+func TestLocalSessionSecretRefusesSymlink(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "elsewhere.key")
+	if err := os.WriteFile(target, []byte("attacker-chosen-key"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "session.key")
+	if err := os.Symlink(target, path); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	if _, _, err := localSessionSecret(path); err == nil || !strings.Contains(err.Error(), "regular file") {
+		t.Fatalf("symlinked key must be refused, got %v", err)
+	}
+}
+
+// TestLocalSessionSecretTightensPermissions proves a widened key keeps its value
+// but loses the extra group/other bits.
+func TestLocalSessionSecretTightensPermissions(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session.key")
+	if err := os.WriteFile(path, []byte("preexisting-key"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	secret, created, err := localSessionSecret(path)
+	if err != nil || created {
+		t.Fatalf("created=%v err=%v", created, err)
+	}
+	if secret != "preexisting-key" {
+		t.Fatalf("existing key must be kept, got %q", secret)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if perm := info.Mode().Perm(); perm != 0o600 {
+		t.Fatalf("key mode = %04o, want 0600", perm)
+	}
+}
+
+// TestLocalSessionSecretReplacesEmptyFile covers a crash that left a zero-byte
+// key: it cannot sign anything, so a fresh key is minted.
+func TestLocalSessionSecretReplacesEmptyFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session.key")
+	if err := os.WriteFile(path, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	secret, created, err := localSessionSecret(path)
+	if err != nil || !created {
+		t.Fatalf("created=%v err=%v", created, err)
+	}
+	content, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(string(content)) != secret {
+		t.Fatalf("file content %q does not match returned key", content)
+	}
+	if secret == "" {
+		t.Fatal("empty key returned")
+	}
+}
+
+// TestLocalSessionSecretConcurrentFirstStart starts several processes' worth of
+// bootstraps at once: exactly one may claim creation and every caller must end
+// up with the key that is on disk, otherwise half the cookies would be invalid.
+func TestLocalSessionSecretConcurrentFirstStart(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "local", "session.key")
+	const workers = 8
+	secrets := make([]string, workers)
+	createdFlags := make([]bool, workers)
+	errs := make([]error, workers)
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			secrets[i], createdFlags[i], errs[i] = localSessionSecret(path)
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+
+	content, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	onDisk := strings.TrimSpace(string(content))
+	created := 0
+	for i := 0; i < workers; i++ {
+		if errs[i] != nil {
+			t.Fatalf("worker %d failed: %v", i, errs[i])
+		}
+		if createdFlags[i] {
+			created++
+		}
+		if secrets[i] != onDisk {
+			t.Fatalf("worker %d returned a key that is not on disk", i)
+		}
+	}
+	if created != 1 {
+		t.Fatalf("%d workers claimed to create the key, want 1", created)
 	}
 }

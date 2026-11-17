@@ -117,7 +117,17 @@ function syncAgentTabIndicators(){$$('#agentsView .agent-tabs, #agentModal .agen
 if(typeof document!=='undefined'&&document.fonts?.ready)document.fonts.ready.then(()=>syncAgentTabIndicators()).catch(()=>{});
 function pickerHTML(items,selected,prefix){return `<input class="input picker-filter" data-picker-filter="${prefix}" placeholder="筛选名称或说明…">${(items||[]).map(x=>`<label class="asset-check"><input type="checkbox" name="${prefix}" value="${x.id}" ${(selected||[]).includes(x.id)?'checked':''}><span>${escapeHTML(x.name)}<small>${escapeHTML(x.description||x.id)}</small></span></label>`).join('')||'<span class="type-label">暂无可用资产，请先到对应的资产管理页面添加</span>'}`}
 function bindPickerFilters(root){(root||document).querySelectorAll('[data-picker-filter]').forEach(input=>input.oninput=()=>{const q=input.value.trim().toLowerCase();input.parentElement.querySelectorAll('.asset-check').forEach(row=>row.hidden=!!q&&!row.textContent.toLowerCase().includes(q))})}
-function executorOptions(selected){const allowed=new Set(['codebuddy','codex','claude','opencode','cursor','agy','kimi','pi','dsh','zcode']),items=(state.data.executors||[]).filter(x=>allowed.has(x.id)),legacy=selected&&!allowed.has(selected)?`<option value="${escapeHTML(selected)}" selected disabled>历史执行器 ${escapeHTML(selected)}（请重新选择 CLI）</option>`:'';return legacy+items.map(x=>`<option value="${escapeHTML(x.id)}" ${x.id===selected?'selected':''}>${escapeHTML(x.name||x.id)}</option>`).join('')}
+// 本地模式不提供的执行器（本地形态支持尚不完整，依赖平台侧模型与凭据下发）：
+// 这一个列表是前端各处兜底隐藏的唯一来源，执行机器、SOP 检查和个人凭据卡调用它，
+// 避免多处各写一份名单后漂移。参数是执行器 id 或 CLI kind，这两者的 kimi/zcode 相同。
+// 角色向导不再用它筛选——候选直接取 bootstrap 下发的 /api/executors（服务端已过滤）。
+const LOCAL_MODE_HIDDEN_EXECUTORS=new Set(['kimi','zcode']);
+function localModeExecutorHidden(kind){return !!state.localMode&&LOCAL_MODE_HIDDEN_EXECUTORS.has(String(kind||'').trim())}
+// The candidate list is whatever bootstrap handed the page: the server already
+// applies the local-mode filter, so this file holds no executor list of its own
+// and a new built-in executor shows up without a frontend change. "legacy" is
+// the case where the saved role points at an id the page no longer receives.
+function executorOptions(selected){const items=state.data.executors||[],known=new Set(items.map(x=>x.id)),legacy=selected&&!known.has(selected)?`<option value="${escapeHTML(selected)}" selected disabled>历史执行器 ${escapeHTML(selected)}（请重新选择 CLI）</option>`:'';return legacy+items.map(x=>`<option value="${escapeHTML(x.id)}" ${x.id===selected?'selected':''}>${escapeHTML(x.name||x.id)}</option>`).join('')}
 const AGENT_CUSTOM_MODEL='__custom__';
 function executorModelCatalogs(){return window.AgentFlowExecutorModels||{}}
 async function loadExecutorModelCatalogs(){

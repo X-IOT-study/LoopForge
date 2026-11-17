@@ -20,6 +20,7 @@ import (
 	apidocs "agentflow/docs/api"
 	"agentflow/internal/application"
 	"agentflow/internal/auth"
+	"agentflow/internal/config"
 	"agentflow/internal/domain"
 	"agentflow/internal/engine"
 	"agentflow/internal/knowledge"
@@ -215,6 +216,10 @@ func newWithNotifications(s *repo.Store, e *engine.Engine, syncSvc *tracker.Serv
 		c.JSON(http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 	})
 	g.Use(logging(), securityHeaders(), cors(), gzipMaybe())
+	// Static policy, so it runs before identity: a blocked path answers 403
+	// even for anonymous callers instead of being shadowed by a 401. cors()
+	// and securityHeaders() already ran, so the rejection keeps their headers.
+	g.Use(localModeGuard())
 	g.Use(api.tokens.userAccessAuth())
 	if basicUser != "" && basicPass != "" {
 		g.Use(basicAuth(basicUser, basicPass))
@@ -728,7 +733,7 @@ func (s *Server) bootstrap(c *gin.Context) {
 	go func() { defer load.Done(); rules = s.repo.Rules() }()
 	go func() { defer load.Done(); skills = s.repo.Skills() }()
 	go func() { defer load.Done(); mcpServers = s.repo.MCPServers() }()
-	go func() { defer load.Done(); executors = repo.BuiltInExecutors() }()
+	go func() { defer load.Done(); executors = localModeExecutors() }()
 	go func() { defer load.Done(); dockerfiles = s.repo.Dockerfiles() }()
 	go func() { defer load.Done(); environments = s.repo.Environments() }()
 	go func() { defer load.Done(); sandboxes = s.repo.Sandboxes() }()
@@ -762,7 +767,7 @@ func (s *Server) bootstrap(c *gin.Context) {
 		"workflows": workflows, "syncConfig": syncConfig, "scheduleJobs": scheduleJobs, "schedulerEnabled": schedulerEnabled(),
 		"users":        domain.PublicUsers(users),
 		"storage":      s.repo.StorageInfo(),
-		"capabilities": map[string]bool{"docker": runtime.DockerReady()},
+		"capabilities": map[string]bool{"docker": runtime.DockerReady(), "localMode": config.LocalMode()},
 		// Set when users without their own CodeBuddy API Key can still chat
 		// and run SOPs on the platform's shared key, limited to these models
 		// (sponsoredModel is the default).

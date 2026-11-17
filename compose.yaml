@@ -23,10 +23,19 @@ services:
     # AGENTFLOW_ISOLATED_IMAGE) with each release; source builds use compose.dev.yaml.
     image: ${LOOPFORGE_IMAGE:-ghcr.io/tencent/loopforge:0.3.8}
     ports:
+      # Platform default (all interfaces). Local-mode users set
+      # LOOPFORGE_BIND=127.0.0.1; the process itself already refuses to listen
+      # off-loopback in local mode unless AGENTFLOW_LOCAL_ALLOW_REMOTE=1.
       - "${LOOPFORGE_BIND:-0.0.0.0}:${AGENTFLOW_HTTP_PORT:-8090}:8080"
     environment:
       AGENTFLOW_HTTP_PORT: 8080
+      # Local-only edition switch; empty keeps the platform behaviour.
+      AGENTFLOW_LOCAL_MODE: ${AGENTFLOW_LOCAL_MODE:-}
+      AGENTFLOW_LOCAL_ALLOW_REMOTE: ${AGENTFLOW_LOCAL_ALLOW_REMOTE:-}
       AGENTFLOW_MYSQL_DSN: loopforge:${LOOPFORGE_DB_PASSWORD}@tcp(mysql:3306)/loopforge
+      # Required: the process refuses to start without it. The local-only
+      # edition runs the host binary and bootstraps its own key, so it does not
+      # need compose to relax this.
       AGENTFLOW_SESSION_SECRET: ${AGENTFLOW_SESSION_SECRET:?Run scripts/configure.sh first}
       AGENTFLOW_AUTH_REQUIRED: "true"
       AGENTFLOW_ALLOW_SIGNUP: ${AGENTFLOW_ALLOW_SIGNUP:-true}
@@ -41,7 +50,9 @@ services:
       AGENTFLOW_PREVIEW_PUBLIC_URL: ${AGENTFLOW_PREVIEW_PUBLIC_URL:-}
       AGENTFLOW_PLATFORM_MCP_URL: ${AGENTFLOW_PLATFORM_MCP_URL:-http://platform:8080}
       AGENTFLOW_DOCKER_NETWORK: ${COMPOSE_PROJECT_NAME:-loopforge}_default
-      AGENTFLOW_LOCAL_SANDBOX: docker
+      # Driver for the platform service's own sandboxes. Local mode rejects the
+      # container driver (local_sandbox_unsupported): it has no host CLI login.
+      AGENTFLOW_LOCAL_SANDBOX: ${AGENTFLOW_LOCAL_SANDBOX:-docker}
       AGENTFLOW_ISOLATED_IMAGE: ${LOOPFORGE_IMAGE:-ghcr.io/tencent/loopforge:0.3.8}
       HOME: ${LOOPFORGE_DATA_DIR:?Run scripts/configure.sh first}/home
       AGENTFLOW_RUNNER_BINARY: /app/bin/agentflow-runner-{os}-{arch}

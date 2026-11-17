@@ -15,13 +15,16 @@ function selectedAIOrchestratorModel() {
 }
 
 function aiOrchestratorModels(engine = aiOrchestratorEngine(selectedAIOrchestratorModel())) {
-  return (window.AgentFlowAssistantModels?.catalog().models || []).filter(model => aiOrchestratorEngine(model.id) === engine);
+  return (window.AgentFlowAssistantModels?.catalog().models || []).filter(model => aiOrchestratorEngine(model.id) === engine && !localModeExecutorHidden(aiOrchestratorEngine(model.id)));
 }
 
 function aiOrchestratorEngines() {
   const catalog = window.AgentFlowAssistantModels?.catalog() || {};
-  if (catalog.engines?.length) return catalog.engines;
-  return [...new Set((catalog.models || []).map(model => aiOrchestratorEngine(model.id)))].map(id => ({id, name: id === 'codebuddy' ? 'CodeBuddy' : id, configured: true}));
+  const engines = catalog.engines?.length
+    ? catalog.engines
+    : [...new Set((catalog.models || []).map(model => aiOrchestratorEngine(model.id)))].map(id => ({id, name: id === 'codebuddy' ? 'CodeBuddy' : id, configured: true}));
+  // 本地模式不提供 kimi/zcode：服务端目录已经过滤，这里再兜住缓存的旧目录。
+  return engines.filter(engine => !localModeExecutorHidden(engine.id));
 }
 
 function selectAIOrchestratorModel(id) {

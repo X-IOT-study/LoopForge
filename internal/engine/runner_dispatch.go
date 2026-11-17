@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"agentflow/internal/config"
 	"agentflow/internal/domain"
 	"agentflow/internal/runtime"
 )
@@ -199,23 +200,37 @@ func (e *Engine) dispatchRunnerTask(ctx context.Context, runnerID string, run do
 	if strings.TrimSpace(options.GateResultPath) != "" {
 		invocation.Artifacts = append(invocation.Artifacts, gateResultContract(options.GateResultPath))
 	}
-	if authMode == domain.RuntimeAuthPersonal {
+	if authMode == domain.RuntimeAuthPersonal || config.LocalMode() {
+		// personal: every provider needs the responsible user's own key.
+		// local: the execution machine's own CLI login can serve the run, so a
+		// missing key is not an error — the key is carried whenever the owner
+		// configured one and the execution side decides whether to use it.
+		personal := authMode == domain.RuntimeAuthPersonal
 		switch ex.Kind {
 		case "codex":
 			if strings.TrimSpace(sb.credentialSnapshot().Codex.APIKey) == "" {
-				return "", errors.New("当前责任人未配置 Codex API Key：请先在个人配置中配置，或将执行机器认证方式切回本机登录")
+				if personal {
+					return "", errors.New("当前责任人未配置 Codex API Key：请先在个人配置中配置，或将执行机器认证方式切回本机登录")
+				}
+				break
 			}
 			invocation.CodexAPIKey = sb.credentialSnapshot().Codex.APIKey
 			invocation.CodexBaseURL = sb.credentialSnapshot().Codex.BaseURL
 		case "claude-code":
 			if strings.TrimSpace(sb.credentialSnapshot().ClaudeCode.APIKey) == "" {
-				return "", errors.New("当前责任人未配置 Claude Code API Key：请先在个人配置中配置，或将执行机器认证方式切回本机登录")
+				if personal {
+					return "", errors.New("当前责任人未配置 Claude Code API Key：请先在个人配置中配置，或将执行机器认证方式切回本机登录")
+				}
+				break
 			}
 			invocation.ClaudeCodeAPIKey = sb.credentialSnapshot().ClaudeCode.APIKey
 			invocation.ClaudeCodeBaseURL = sb.credentialSnapshot().ClaudeCode.BaseURL
 		case "codebuddy":
 			if strings.TrimSpace(sb.credentialSnapshot().CodeBuddy.APIKey) == "" {
-				return "", errors.New("当前责任人未配置 CodeBuddy API Key：请先在个人配置中配置")
+				if personal {
+					return "", errors.New("当前责任人未配置 CodeBuddy API Key：请先在个人配置中配置")
+				}
+				break
 			}
 			invocation.CodeBuddyAPIKey = sb.credentialSnapshot().CodeBuddy.APIKey
 			invocation.CodeBuddyInternetEnvironment = sb.credentialSnapshot().CodeBuddy.InternetEnvironment
@@ -223,7 +238,10 @@ func (e *Engine) dispatchRunnerTask(ctx context.Context, runnerID string, run do
 			if runtime.IsAgentCLI(ex.Kind) {
 				cred := sb.credentialSnapshot().AgentCLI[ex.Kind]
 				if strings.TrimSpace(cred.APIKey) == "" {
-					return "", fmt.Errorf("当前责任人未配置 %s API Key：请先在个人配置中配置", runtime.AgentCLILabel(ex.Kind))
+					if personal {
+						return "", fmt.Errorf("当前责任人未配置 %s API Key：请先在个人配置中配置", runtime.AgentCLILabel(ex.Kind))
+					}
+					break
 				}
 				invocation.AgentCLIAPIKey = cred.APIKey
 				invocation.AgentCLIBaseURL = cred.BaseURL

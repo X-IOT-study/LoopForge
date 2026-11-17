@@ -6,6 +6,9 @@ import (
 	"sync"
 	"time"
 
+	"agentflow/internal/config"
+	"agentflow/internal/domain"
+
 	"github.com/gin-gonic/gin"
 )
 
@@ -98,7 +101,22 @@ func (h *authHandlers) authPassword(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid login request"})
 		return
 	}
-	u, found := h.repo.UserByLoginName(input.Login)
+	// Local mode has exactly one account, so the login field carries no
+	// information: the password alone decides. The platform path keeps
+	// resolving the account from the submitted login.
+	var (
+		u     domain.User
+		found bool
+	)
+	if config.LocalMode() {
+		u, found = h.repo.LocalAdmin()
+		if !found {
+			c.JSON(http.StatusConflict, gin.H{"error": "本地管理员账号未初始化", "code": "local_mode_not_setup"})
+			return
+		}
+	} else {
+		u, found = h.repo.UserByLoginName(input.Login)
+	}
 	valid := h.repo.CheckLocalPassword(u.ID, input.Password)
 	if !found || !valid {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid username or password"})

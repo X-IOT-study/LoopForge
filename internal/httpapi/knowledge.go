@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"strconv"
 
+	"agentflow/internal/config"
 	"agentflow/internal/domain"
 	"agentflow/internal/knowledge"
 
@@ -78,6 +79,12 @@ func (h *knowledgeHandlers) settings(c *gin.Context) {
 
 // 路由: g.POST("/api/knowledge/check", h.check)
 func (h *knowledgeHandlers) check(c *gin.Context) {
+	// Connecting to a knowledge base is an upstream call; a local instance has
+	// no upstream. Local reads (document/usage/candidates) stay available.
+	if config.LocalMode() {
+		respondLocalModeUnsupported(c)
+		return
+	}
 	if !h.canManage(c.Request) {
 		c.JSON(http.StatusForbidden, gin.H{"error": "只有平台管理员可以检查知识库连接"})
 		return
@@ -100,6 +107,12 @@ func (h *knowledgeHandlers) sources(c *gin.Context) {
 
 // 路由: g.POST("/api/knowledge/search", h.search)
 func (h *knowledgeHandlers) search(c *gin.Context) {
+	// Search queries the upstream knowledge service, which local mode has no
+	// route to.
+	if config.LocalMode() {
+		respondLocalModeUnsupported(c)
+		return
+	}
 	var input struct {
 		Query     string   `json:"query"`
 		ProjectID string   `json:"projectId"`

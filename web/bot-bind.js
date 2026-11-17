@@ -11,8 +11,7 @@
   if(!auth.user||auth.user.isGuest){
    content.innerHTML='<p>请登录你自己的平台账号。登录后仍需由原企微发送者确认，绑定才会生效。</p><button id="login">登录平台</button><button class="secondary" id="local" hidden>本地验收登录</button>';
    document.getElementById('login').onclick=()=>{if(auth.loginUrl)location.href=auth.loginUrl;else failure(new Error('登录入口不可用'));};
-   const local=await request('/api/auth/local').catch(()=>({enabled:false}));
-   if(local.enabled){const button=document.getElementById('local');button.hidden=false;button.onclick=()=>request('/api/auth/local',{}).then(start).catch(failure);}
+   if(!auth.localMode){const local=await request('/api/auth/local').catch(()=>({enabled:false}));if(local.enabled){const button=document.getElementById('local');button.hidden=false;button.onclick=()=>request('/api/auth/local',{}).then(start).catch(failure);}}
    return;
   }
   const data=await request('/api/bot-bindings/status',{token});

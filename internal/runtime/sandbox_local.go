@@ -7,6 +7,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"syscall"
+
+	"agentflow/internal/config"
 )
 
 type localSandbox struct {
@@ -73,10 +75,16 @@ func (s *localSandbox) command(ctx context.Context, command CommandSpec, base []
 // credential binding used by managed sandboxes. A temporary private HOME keeps
 // control-plane utilities (for example requirement clarification) from reading
 // or modifying the operator's CLI state or the inspected repository.
+//
+// Local mode is the exception and deliberately skips that private HOME: the
+// machine's own CLIs are the credential source, so a control-plane turn must
+// reuse the host CLI state exactly like a managed local sandbox does. Giving it
+// an empty HOME would hide the host login and contradict the local-first
+// credential policy (see local_credentials.go).
 func ExecuteLocalCommand(ctx context.Context, workspace string, command CommandSpec, credentials RunCredentials, sink EventSink) (string, error) {
 	sandbox := &localSandbox{id: "control-plane", workspace: workspace}
 	var cleanup func()
-	if command.PrivateHome {
+	if command.PrivateHome && !config.LocalMode() {
 		root, err := os.MkdirTemp("", "agentflow-private-home-")
 		if err != nil {
 			return "", err

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"agentflow/internal/auth"
+	"agentflow/internal/config"
 
 	"github.com/gin-gonic/gin"
 )
@@ -51,6 +52,11 @@ const gatewayIdentitySecretHeader = "X-AgentFlow-Gateway-Secret"
 // a configured secret the gateway must present it; without one, any forwarded
 // request is refused, as authLocal does.
 func gatewayLoginName(r *http.Request) string {
+	// A local-mode instance sits on the user's own machine with no gateway in
+	// front of it, so no forwarded identity is ever trusted.
+	if config.LocalMode() {
+		return ""
+	}
 	if !trustGatewayIdentityHeaders() || !isLoopbackAddr(r.RemoteAddr) {
 		return ""
 	}
@@ -77,15 +83,20 @@ func secureRequest(r *http.Request) bool {
 }
 
 // Local acceptance login is opt-in and restricted to direct loopback requests.
+// Local mode has a real password account instead, so this bypass stays off.
 func (h *authHandlers) authLocal(c *gin.Context) {
 	login := strings.TrimSpace(os.Getenv("AGENTFLOW_LOCAL_LOGIN_USER"))
-	enabled := login != "" && isLoopbackAddr(c.Request.RemoteAddr) && c.GetHeader("X-Forwarded-For") == "" && c.GetHeader("Forwarded") == ""
+	enabled := !config.LocalMode() && login != "" && isLoopbackAddr(c.Request.RemoteAddr) && c.GetHeader("X-Forwarded-For") == "" && c.GetHeader("Forwarded") == ""
 	if c.Request.Method == http.MethodGet {
 		c.JSON(http.StatusOK, map[string]bool{"enabled": enabled})
 		return
 	}
 	origin, err := url.Parse(c.GetHeader("Origin"))
 	if !enabled || err != nil || origin.Host != c.Request.Host || (origin.Scheme != "http" && origin.Scheme != "https") {
+		if config.LocalMode() {
+			respondLocalModeUnsupported(c)
+			return
+		}
 		c.JSON(http.StatusForbidden, map[string]string{"error": "本地验收登录未启用或请求来源不允许"})
 		return
 	}
@@ -231,7 +242,7 @@ func (h *authHandlers) authCurrent(c *gin.Context) {
 		if token, signErr := h.getAuthClient().SignUser(user); signErr == nil && token != "" {
 			h.setAuthCookie(c.Writer, c.Request, token)
 		}
-		c.JSON(http.StatusOK, map[string]any{"user": h.annotateUser(user), "authRequired": authRequired(), "appDomain": h.getAuthClient().Config().AppDomain})
+		c.JSON(http.StatusOK, map[string]any{"user": h.annotateUser(user), "authRequired": authRequired(), "appDomain": h.getAuthClient().Config().AppDomain, "localMode": config.LocalMode()})
 		return
 	}
 
@@ -253,7 +264,7 @@ func (h *authHandlers) authCurrent(c *gin.Context) {
 				if token, signErr := h.getAuthClient().SignUser(user); signErr == nil && token != "" {
 					h.setAuthCookie(c.Writer, c.Request, token)
 				}
-				c.JSON(http.StatusOK, map[string]any{"user": h.annotateUser(user), "authRequired": authRequired(), "appDomain": h.getAuthClient().Config().AppDomain})
+				c.JSON(http.StatusOK, map[string]any{"user": h.annotateUser(user), "authRequired": authRequired(), "appDomain": h.getAuthClient().Config().AppDomain, "localMode": config.LocalMode()})
 				return
 			}
 		}
@@ -266,7 +277,7 @@ func (h *authHandlers) authCurrent(c *gin.Context) {
 		if token, signErr := h.getAuthClient().SignUser(user); signErr == nil && token != "" {
 			h.setAuthCookie(c.Writer, c.Request, token)
 		}
-		c.JSON(http.StatusOK, map[string]any{"user": h.annotateUser(user), "authRequired": false, "appDomain": h.getAuthClient().Config().AppDomain})
+		c.JSON(http.StatusOK, map[string]any{"user": h.annotateUser(user), "authRequired": false, "appDomain": h.getAuthClient().Config().AppDomain, "localMode": config.LocalMode()})
 		return
 	}
 
@@ -278,6 +289,7 @@ func (h *authHandlers) authCurrent(c *gin.Context) {
 		"loginUrl":     loginURL,
 		"authRequired": authRequired(),
 		"appDomain":    h.getAuthClient().Config().AppDomain,
+		"localMode":    config.LocalMode(),
 	})
 }
 

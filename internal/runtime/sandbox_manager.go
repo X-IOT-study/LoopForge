@@ -448,6 +448,13 @@ func createDriverSandbox(ctx context.Context, kind, id, workspace string, profil
 	case "bwrap":
 		return createBwrap(id, workspace, profile, requirements)
 	case "docker":
+		// Local mode reuses the host CLI logins, which a container never has, so
+		// every caller of this entry point fails closed with the documented code.
+		// The guard keeps platform mode untouched; runner tasks also reject the
+		// driver earlier, before any workspace or environment work.
+		if LocalSandboxUnsupported(profile.Driver) {
+			return nil, LocalSandboxUnsupportedError(profile.Driver)
+		}
 		return createDocker(ctx, id, workspace, profile, requirements, dockerfile)
 	default:
 		return nil, fmt.Errorf("unsupported %s driver %q", kind, profile.Driver)

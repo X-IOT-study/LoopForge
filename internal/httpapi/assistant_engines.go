@@ -19,6 +19,7 @@ import (
 	"sync"
 	"time"
 
+	"agentflow/internal/config"
 	"agentflow/internal/domain"
 	"agentflow/internal/repo"
 	"agentflow/internal/runtime"
@@ -34,9 +35,21 @@ const (
 	assistantEngineClaude    = "claude-code"
 )
 
-// assistantCLIEngines are the CLIs other than CodeBuddy, in switch order.
+// assistantCLIEngines are the CLIs other than CodeBuddy, in switch order. The
+// local-mode filter applies here so every caller (engine switch, model
+// prefixes, model probes) sees the same set; platform mode keeps all of them.
 func assistantCLIEngines() []string {
-	return append([]string{assistantEngineCodex, assistantEngineClaude}, runtime.AgentCLIKinds...)
+	engines := append([]string{assistantEngineCodex, assistantEngineClaude}, runtime.AgentCLIKinds...)
+	if !config.LocalMode() {
+		return engines
+	}
+	kept := make([]string, 0, len(engines))
+	for _, engine := range engines {
+		if config.LocalModeSupportsExecutor(engine) {
+			kept = append(kept, engine)
+		}
+	}
+	return kept
 }
 
 func assistantModelEngine(id string) (engine, model string) {

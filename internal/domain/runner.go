@@ -6,6 +6,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"agentflow/internal/config"
 )
 
 // Runner connection model (docs: cli-connect.md).
@@ -269,10 +271,16 @@ func (r Runner) SupportsProvider(provider string) bool {
 }
 
 // RuntimeAuthMode returns the configured credential source for a provider.
-// CodeBuddy and the extra agent CLIs have no reusable local-login flow, so
-// they always use the responsible user's personal credential. Codex and
-// Claude Code default to local login.
+// Local mode has exactly one effective mode: the machine's own CLI login comes
+// first and the responsible user's personal credential is the fallback, so
+// every reader of this method agrees without touching the stored preference.
+// Otherwise the extra agent CLIs always use the responsible user's personal
+// credential (no reusable local-login flow), while Codex and Claude Code default
+// to local login.
 func (r Runner) RuntimeAuthMode(provider string) string {
+	if config.LocalMode() {
+		return RuntimeAuthLocal
+	}
 	if IsAgentCLIKind(provider) {
 		return RuntimeAuthPersonal
 	}

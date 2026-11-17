@@ -2,8 +2,12 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/base64"
+	"errors"
 	"flag"
 	"fmt"
+	"io/fs"
 	"log"
 	"net"
 	"net/http"
@@ -74,6 +78,223 @@ func loadDotEnv() {
 	}
 }
 
+// applyLocalMode enforces the local-only deployment contract: no gateway
+// identity headers, loopback-only listening, a self-bootstrapped session key,
+// and mandatory sign-in. It runs after loadDotEnv so .env values count, and
+// before the AGENTFLOW_SESSION_SECRET check so the bootstrap can satisfy it.
+//
+// The guard is the first statement: administrative one-shot commands
+// (-cli-action, -browser-image) must not be killed by listen or key checks.
+func applyLocalMode(role, addr, workspaces, cliAction string, browserImage bool) {
+	if !config.LocalMode() || cliAction != "" || browserImage {
+		return
+	}
+	if enabled, err := strconv.ParseBool(strings.TrimSpace(os.Getenv("AGENTFLOW_TRUST_IDENTITY_HEADERS"))); err == nil && enabled {
+		log.Fatal("local mode has no gateway in front of it; unset AGENTFLOW_TRUST_IDENTITY_HEADERS")
+	}
+	listen := localListenAddress(role, addr)
+	if !config.LocalModeAllowRemote() && !loopbackListen(listen) {
+		log.Fatalf("local mode listens on loopback only; use -addr 127.0.0.1:8080 or set AGENTFLOW_LOCAL_ALLOW_REMOTE=1 (got %q)", listen)
+	}
+	if os.Getenv("AGENTFLOW_SESSION_SECRET") == "" {
+		path, err := localSessionKeyPath(workspaces)
+		if err != nil {
+			log.Fatal(err)
+		}
+		secret, created, err := localSessionSecret(path)
+		if err != nil {
+			log.Fatal(err)
+		}
+		os.Setenv("AGENTFLOW_SESSION_SECRET", secret)
+		if created {
+			log.Printf("local mode: session key generated at %s", path)
+		} else {
+			log.Printf("local mode: session key loaded from %s", path)
+		}
+	}
+	forceLocalAuth()
+	if strings.TrimSpace(os.Getenv("AGENTFLOW_LOCAL_SANDBOX")) == "docker" {
+		// Local mode keeps the process sandbox; an explicit docker driver still
+		// works, but every node then runs in a container.
+		log.Printf("local mode: AGENTFLOW_LOCAL_SANDBOX=docker keeps the docker sandbox driver")
+	}
+	log.Printf("local mode: cloud runner pool, image prebuild, tapd sync, notification delivery disabled")
+}
+
+// localListenAddress resolves the address this process will really bind,
+// through config.LoadEndpoints, so the loopback check cannot drift from it: the
+// worker role binds its own default (:8081), not the API port.
+func localListenAddress(role, addrFlag string) string {
+	if v := strings.TrimSpace(addrFlag); v != "" {
+		return v
+	}
+	role = strings.ToLower(strings.TrimSpace(role))
+	if endpoints, err := config.LoadEndpoints(role, ""); err == nil && strings.TrimSpace(endpoints.ListenAddr) != "" {
+		return endpoints.ListenAddr
+	}
+	// LoadEndpoints rejects a malformed port; mirror its fallback rather than
+	// skipping the check, so a bad configuration still fails closed.
+	if role == "worker" {
+		return ":8081"
+	}
+	port := strings.TrimSpace(os.Getenv("AGENTFLOW_HTTP_PORT"))
+	if port == "" {
+		port = "8080"
+	}
+	return ":" + port
+}
+
+// loopbackListen reports whether an address binds this host only. An empty
+// host part (":8080") is every interface, not loopback.
+func loopbackListen(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return false
+	}
+	host = strings.TrimSpace(host)
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(strings.Trim(host, "[]"))
+	return ip != nil && ip.IsLoopback()
+}
+
+// localSessionKeyPath is <data dir>/local/session.key. The data directory
+// comes from AGENTFLOW_DATA_DIR and defaults to the parent of the workspace
+// root, so a default install keeps everything under ~/.agentflow.
+func localSessionKeyPath(workspaces string) (string, error) {
+	dir := strings.TrimSpace(os.Getenv("AGENTFLOW_DATA_DIR"))
+	if dir == "" {
+		root, err := resolveWorkspaceRoot(workspaces)
+		if err != nil {
+			return "", err
+		}
+		dir = filepath.Join(filepath.Dir(root), "data")
+	}
+	return filepath.Join(dir, "local", "session.key"), nil
+}
+
+// errSessionKeyEmpty marks a key file that exists but holds no usable key, and
+// stopped changing while it was read: either a crash left it behind or a
+// concurrent first start has not written it yet.
+var errSessionKeyEmpty = errors.New("session key file is empty")
+
+// localSessionSecret returns the persisted session key, creating it on first
+// start. Persisting it is what keeps a browser session valid across restarts;
+// the file is 0600 inside a 0700 directory because it signs every cookie.
+//
+// Creation is exclusive (O_EXCL) so two processes starting at once cannot each
+// mint a key and invalidate the other's cookies: the loser reads the winner's
+// key instead. The content is fsynced before the winner reports success.
+func localSessionSecret(path string) (string, bool, error) {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return "", false, err
+	}
+	for attempt := 0; attempt < 3; attempt++ {
+		secret, err := createLocalSessionSecret(path)
+		if err == nil {
+			return secret, true, nil
+		}
+		if !errors.Is(err, fs.ErrExist) {
+			return "", false, err
+		}
+		// Another process owns the file; wait for its key.
+		secret, err = awaitLocalSessionSecret(path)
+		if err == nil {
+			return secret, false, nil
+		}
+		if !errors.Is(err, errSessionKeyEmpty) {
+			return "", false, err
+		}
+		// The file holds no key and stopped changing: drop the leftover and race
+		// for creation again.
+		if removeErr := os.Remove(path); removeErr != nil && !os.IsNotExist(removeErr) {
+			return "", false, removeErr
+		}
+	}
+	return "", false, fmt.Errorf("session key %s could not be initialised", path)
+}
+
+// createLocalSessionSecret mints a key into path, failing with fs.ErrExist when
+// another process got there first.
+func createLocalSessionSecret(path string) (string, error) {
+	buf := make([]byte, 32)
+	if _, err := rand.Read(buf); err != nil {
+		return "", err
+	}
+	secret := base64.RawURLEncoding.EncodeToString(buf)
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return "", err
+	}
+	_, writeErr := file.WriteString(secret)
+	if writeErr == nil {
+		writeErr = file.Sync()
+	}
+	if closeErr := file.Close(); writeErr == nil {
+		writeErr = closeErr
+	}
+	if writeErr != nil {
+		_ = os.Remove(path)
+		return "", writeErr
+	}
+	return secret, nil
+}
+
+// awaitLocalSessionSecret reads a key another process is creating. A fresh but
+// still empty file is retried for a short while so a slow winner is not
+// mistaken for a stale one.
+func awaitLocalSessionSecret(path string) (string, error) {
+	for attempt := 0; attempt < 100; attempt++ {
+		secret, err := readLocalSessionSecret(path)
+		if !errors.Is(err, errSessionKeyEmpty) {
+			return secret, err
+		}
+		time.Sleep(3 * time.Millisecond)
+	}
+	return "", errSessionKeyEmpty
+}
+
+// readLocalSessionSecret loads an existing key, refusing anything but a regular
+// file and tightening permissions that were widened by hand.
+func readLocalSessionSecret(path string) (string, error) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return "", err
+	}
+	if !info.Mode().IsRegular() {
+		return "", fmt.Errorf("session key %s must be a regular file, got %s", path, info.Mode().Type())
+	}
+	if perm := info.Mode().Perm(); perm&0o077 != 0 {
+		if chmodErr := os.Chmod(path, 0o600); chmodErr != nil {
+			return "", chmodErr
+		}
+		log.Printf("local mode: session key %s had mode %04o, tightened to 0600", path, perm)
+	}
+	content, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	secret := strings.TrimSpace(string(content))
+	if secret == "" {
+		return "", errSessionKeyEmpty
+	}
+	return secret, nil
+}
+
+// forceLocalAuth makes sign-in mandatory. A local instance owns the user's own
+// machine data, so serving it to anyone who can reach the port without a
+// password is never the intended state.
+func forceLocalAuth() {
+	if raw := strings.TrimSpace(os.Getenv("AGENTFLOW_AUTH_REQUIRED")); raw != "" {
+		if enabled, err := strconv.ParseBool(raw); err == nil && enabled {
+			return
+		}
+		log.Printf("local mode: AGENTFLOW_AUTH_REQUIRED=%q overridden; sign-in is mandatory", raw)
+	}
+	os.Setenv("AGENTFLOW_AUTH_REQUIRED", "true")
+}
+
 func main() {
 	if runtime.RunMCPCallCLI(os.Args[1:]) {
 		return
@@ -94,6 +315,7 @@ func main() {
 	browserImage := flag.Bool("browser-image", false, "build or pull the agent browser sidecar image, print its name and exit")
 	flag.Parse()
 	loadDotEnv()
+	applyLocalMode(*roleFlag, *addr, *workspaces, *cliAction, *browserImage)
 	if *browserImage {
 		ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 		image, err := runtime.EnsureBrowserImage(ctx)
@@ -136,7 +358,11 @@ func main() {
 	}
 	log.Printf("storage driver=%v database=%v role=%s", s.StorageInfo()["driver"], s.StorageInfo()["database"], role)
 	e := engine.New(s, runtime.NewManagerWithLimit(root, *workerConcurrency))
-	runtime.PrebuildIsolatedImage()
+	// Local mode never reaches the network: the isolated image would be pulled
+	// from a registry, so it is skipped there (see applyLocalMode).
+	if !config.LocalMode() {
+		runtime.PrebuildIsolatedImage()
+	}
 	host, _ := os.Hostname()
 	instanceID := strings.TrimSpace(os.Getenv("AGENTFLOW_INSTANCE_ID"))
 	if instanceID == "" {
@@ -161,13 +387,17 @@ func main() {
 		}
 	}
 	e.ConfigureExecution(instanceID, host, leaseTTL, executeRuns)
-	e.ConfigureCloudRunnerPool(engine.CloudRunnerPool{
-		Label:    os.Getenv("AGENTFLOW_CLOUD_RUNNER_LABEL"),
-		Projects: engine.ParseCloudRunnerProjects(os.Getenv("AGENTFLOW_CLOUD_RUNNER_PROJECTS")),
-		// AGENTFLOW_LOCAL_EXECUTION=false keeps this host from running nodes
-		// of pool projects: they wait for, or move to, a pool runner.
-		Required: strings.EqualFold(strings.TrimSpace(os.Getenv("AGENTFLOW_LOCAL_EXECUTION")), "false"),
-	})
+	// The cloud runner pool belongs to a platform deployment; local mode runs
+	// every node on this host so the pool is never configured.
+	if !config.LocalMode() {
+		e.ConfigureCloudRunnerPool(engine.CloudRunnerPool{
+			Label:    os.Getenv("AGENTFLOW_CLOUD_RUNNER_LABEL"),
+			Projects: engine.ParseCloudRunnerProjects(os.Getenv("AGENTFLOW_CLOUD_RUNNER_PROJECTS")),
+			// AGENTFLOW_LOCAL_EXECUTION=false keeps this host from running nodes
+			// of pool projects: they wait for, or move to, a pool runner.
+			Required: strings.EqualFold(strings.TrimSpace(os.Getenv("AGENTFLOW_LOCAL_EXECUTION")), "false"),
+		})
+	}
 	attachPreviewStore(e, s)
 	log.Printf("engine instance=%s role=%s execute_runs=%t run_lease_ttl=%s", instanceID, role, executeRuns, leaseTTL)
 	claimCtx, stopClaim := context.WithCancel(context.Background())
@@ -220,10 +450,14 @@ func main() {
 		gin.SetMode(gin.ReleaseMode)
 		cfg := s.SyncConfig()
 		syncSvc.ConfigureWithStore(cfg, s)
-		if cfg.AutoSyncEnabled {
-			syncSvc.StartAutoSync(s)
+		// Tapd sync and MR state polling both call the upstream platform, which
+		// a local-only instance does not have.
+		if !config.LocalMode() {
+			if cfg.AutoSyncEnabled {
+				syncSvc.StartAutoSync(s)
+			}
+			syncSvc.StartMRStateSync(s)
 		}
-		syncSvc.StartMRStateSync(s)
 		notifications := notification.New(s)
 		opts := httpapi.BackgroundOptions{}
 		if inherited {
@@ -233,7 +467,10 @@ func main() {
 		handler, bg := httpapi.NewWithNotificationsAndBackground(claimCtx, s, e, syncSvc, *basicUser, *basicPass, notifications, opts)
 		background = bg
 		defer background.Stop()
-		notifications.Start(claimCtx)
+		// Notification delivery needs the platform's bot credentials.
+		if !config.LocalMode() {
+			notifications.Start(claimCtx)
+		}
 		srv = &http.Server{Addr: listenAddr, Handler: handler, ReadHeaderTimeout: 10 * time.Second}
 		agentToolSrv = &http.Server{Handler: httpapi.AgentToolHandler(handler), ReadHeaderTimeout: 10 * time.Second}
 		go func() {

@@ -48,6 +48,20 @@ func (r *UsersRepo) LocalAccountCount() int64 {
 	return n
 }
 
+// LocalAdmin returns the account a local-mode instance signs in as: the oldest
+// user that has a local password. A database that only holds gateway, GitHub
+// or platform users reports "not initialized" instead of guessing.
+func (r *UsersRepo) LocalAdmin() (domain.User, bool) {
+	var userID int64
+	if err := r.DB.Model(&localAccountRow{}).Select("user_id").Order("user_id ASC").Limit(1).Scan(&userID).Error; err != nil {
+		return domain.User{}, false
+	}
+	if userID <= 0 {
+		return domain.User{}, false
+	}
+	return r.User(userID)
+}
+
 // PlatformAccount is one user as listed under 平台管理 → 成员账号.
 type PlatformAccount struct {
 	UserID      int64  `json:"userId"`

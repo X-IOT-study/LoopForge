@@ -38,6 +38,13 @@ func (d *Daemon) acquireTaskSandbox(ctx context.Context, task domain.RunnerTask)
 	if task.Sandbox == nil {
 		return nil, nil, fmt.Errorf("frozen run sandbox definition is required")
 	}
+	// Local mode runs on the machine whose own CLI logins it reuses; the
+	// container driver has its own HOME and none of that state, so the node
+	// fails closed with the documented code instead of surfacing a CLI
+	// authentication error. Platform mode is untouched.
+	if runtime.LocalSandboxUnsupported(task.Sandbox.Profile.Driver) {
+		return nil, nil, runtime.LocalSandboxUnsupportedError(task.Sandbox.Profile.Driver)
+	}
 	requirements, resources := taskSandboxSpec(task)
 	key, id, shared := runSandboxKey(task, requirements, resources)
 	if !shared || d.cfg.DisableRunSandboxReuse {

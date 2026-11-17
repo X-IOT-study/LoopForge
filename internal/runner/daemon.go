@@ -17,6 +17,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"agentflow/internal/config"
 	"agentflow/internal/domain"
 	"agentflow/internal/gitwork"
 	"agentflow/internal/procwatch"
@@ -862,14 +863,27 @@ func (d *Daemon) executeInvocation(ctx context.Context, task domain.RunnerTask) 
 		return execResult{status: domain.RunnerTaskFailed, errMsg: err.Error()}, nil
 	}
 	if runtime.IsAgentCLI(prepared.Command.Provider) {
-		cred := runtime.ProviderCredential{APIKey: inv.AgentCLIAPIKey, BaseURL: inv.AgentCLIBaseURL, Protocol: inv.AgentCLIProtocol, Models: inv.AgentCLIModels}
-		var agentEnv map[string]string
-		argv, agentEnv, err = runtime.BindAgentCLICommand(sandbox, workspace, prepared.Command, cred, argv)
-		if err != nil {
-			return execResult{status: domain.RunnerTaskFailed, errMsg: err.Error()}, nil
-		}
-		for key, value := range agentEnv {
-			credentialEnv[key] = value
+		// Local mode resolves the agent CLI credential in three states: the host's
+		// own login wins, a configured personal key is the fallback, and an
+		// unknown-strength CLI is left to report its own missing login.
+		hasKey := strings.TrimSpace(inv.AgentCLIAPIKey) != ""
+		switch {
+		case config.LocalMode() && runtime.LocalCLILoginAvailable(prepared.Command.Provider):
+			// Host login first: keep its environment and state untouched.
+		case config.LocalMode() && !hasKey && runtime.LocalCredentialStrength(prepared.Command.Provider) == runtime.LocalCredentialUnknown:
+			// Not provable from the host, and no key: run on the CLI's own state.
+		case config.LocalMode() && !hasKey:
+			return execResult{status: domain.RunnerTaskFailed, errMsg: runtime.LocalCredentialHint(prepared.Command.Provider).Error()}, nil
+		default:
+			cred := runtime.ProviderCredential{APIKey: inv.AgentCLIAPIKey, BaseURL: inv.AgentCLIBaseURL, Protocol: inv.AgentCLIProtocol, Models: inv.AgentCLIModels}
+			var agentEnv map[string]string
+			argv, agentEnv, err = runtime.BindAgentCLICommand(sandbox, workspace, prepared.Command, cred, argv)
+			if err != nil {
+				return execResult{status: domain.RunnerTaskFailed, errMsg: err.Error()}, nil
+			}
+			for key, value := range agentEnv {
+				credentialEnv[key] = value
+			}
 		}
 	} else if sandbox != nil && inv.CredentialSource == domain.RuntimeAuthPersonal && prepared.Command.PrivateHome {
 		credentialEnv, err = bindSandboxPrivateHome(workspace, task.Sandbox.Profile.Driver, task.Provider, credentialEnv)
@@ -1032,16 +1046,23 @@ func bindSandboxPrivateHome(workspace, driver, provider string, env map[string]s
 }
 
 // bindInvocationCredentials maps the closed credential bindings onto the
-// task process. Local mode leaves the CLI login state untouched; personal
+// task process. Local mode prefers the machine's own CLI login; personal
 // mode injects only the selected provider's saved credential.
 func bindInvocationCredentials(inv *domain.RunnerInvocation, bindings []runtime.CredentialBinding, argv []string) ([]string, map[string]string, error) {
 	env := map[string]string{}
 	personal := inv.CredentialSource == domain.RuntimeAuthPersonal
+	local := config.LocalMode()
 	for _, binding := range bindings {
 		switch binding {
 		case runtime.BindCodeBuddy:
+			if local && runtime.LocalCLILoginAvailable("codebuddy") {
+				continue
+			}
 			key := strings.TrimSpace(inv.CodeBuddyAPIKey)
 			if key == "" {
+				if local {
+					return nil, nil, runtime.LocalCredentialHint("codebuddy")
+				}
 				return nil, nil, errors.New("CodeBuddy 个人 API Key 未配置")
 			}
 			env["CODEBUDDY_API_KEY"] = key
@@ -1049,11 +1070,17 @@ func bindInvocationCredentials(inv *domain.RunnerInvocation, bindings []runtime.
 				env["CODEBUDDY_INTERNET_ENVIRONMENT"] = net
 			}
 		case runtime.BindCodex:
-			if !personal {
+			if !personal && !local {
+				continue
+			}
+			if local && runtime.LocalCLILoginAvailable("codex") {
 				continue
 			}
 			key := strings.TrimSpace(inv.CodexAPIKey)
 			if key == "" {
+				if local {
+					return nil, nil, runtime.LocalCredentialHint("codex")
+				}
 				return nil, nil, errors.New("Codex 个人 API Key 未配置")
 			}
 			env["CODEX_API_KEY"] = key
@@ -1063,11 +1090,17 @@ func bindInvocationCredentials(inv *domain.RunnerInvocation, bindings []runtime.
 			}
 			argv = withProvider
 		case runtime.BindClaudeCode:
-			if !personal {
+			if !personal && !local {
+				continue
+			}
+			if local && runtime.LocalCLILoginAvailable("claude-code") {
 				continue
 			}
 			key := strings.TrimSpace(inv.ClaudeCodeAPIKey)
 			if key == "" {
+				if local {
+					return nil, nil, runtime.LocalCredentialHint("claude-code")
+				}
 				return nil, nil, errors.New("Claude Code 个人 API Key 未配置")
 			}
 			env["ANTHROPIC_API_KEY"] = key

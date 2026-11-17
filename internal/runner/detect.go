@@ -1,6 +1,7 @@
 package runner
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"os"
@@ -9,8 +10,10 @@ import (
 	goruntime "runtime"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 
+	"agentflow/internal/config"
 	"agentflow/internal/domain"
 	"agentflow/internal/managedcli"
 )
@@ -112,6 +115,12 @@ func detectRuntimes(ctx context.Context, extraBinaries map[string]string, invent
 	out := make([]domain.RunnerRuntime, 0, len(specs)+2)
 	out = append(out, builtinRuntimes()...)
 	for _, spec := range specs {
+		// Local mode does not offer these CLIs, so probing them would report a
+		// runtime the server refuses to dispatch (those with an incomplete
+		// local form). Platform mode keeps probing every spec.
+		if config.LocalMode() && !config.LocalModeSupportsExecutor(spec.Kind) {
+			continue
+		}
 		binary, managed := inventory.BinaryFor(spec.Kind)
 		if !managed {
 			binary = spec.Binary
@@ -188,21 +197,54 @@ func builtinRuntimes() []domain.RunnerRuntime {
 	}
 }
 
+// probeTimeout bounds one --version probe. It is a variable only so tests can
+// shorten it; production never changes it.
+var probeTimeout = 5 * time.Second
+
+// probeVersion returns the first line of `binary <flags> --version`, or "" when
+// the binary is missing, fails, or does not answer in time. A timeout or a
+// signal never yields partial output.
+//
+// The probe runs in its own process group: some names on PATH are not the CLI
+// the platform drives but a desktop app that forks a whole tree (ZCode ships an
+// Electron bundle as /usr/bin/zcode, whose zygote/gpu/renderer/crashpad
+// children survive a kill of the direct child and leave a GUI running after
+// every detection).
 func probeVersion(ctx context.Context, path string, flags []string, environments ...map[string]string) string {
-	probeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	probeCtx, cancel := context.WithTimeout(ctx, probeTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(probeCtx, path, append(append([]string{}, flags...), "--version")...)
+	// WaitDelay 保证孙进程持有管道时 Run 也不会挂住：管道被持有超过 2s 后 Run
+	// 强制关闭并返回，此时 cancel/kill 已发给整个进程组。
+	cmd.WaitDelay = 2 * time.Second
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error {
+		if cmd.Process == nil {
+			return os.ErrProcessDone
+		}
+		if err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL); err != nil {
+			if err == syscall.ESRCH {
+				return os.ErrProcessDone
+			}
+			return err
+		}
+		return nil
+	}
 	if len(environments) > 0 && len(environments[0]) > 0 {
 		cmd.Env = os.Environ()
 		for key, value := range environments[0] {
 			cmd.Env = append(cmd.Env, key+"="+value)
 		}
 	}
-	out, err := cmd.Output()
-	if err != nil {
+	var stdout bytes.Buffer
+	cmd.Stdout = &stdout
+	if err := cmd.Run(); err != nil {
 		return ""
 	}
-	line := strings.TrimSpace(string(out))
+	if probeCtx.Err() != nil {
+		return ""
+	}
+	line := strings.TrimSpace(stdout.String())
 	if idx := strings.IndexByte(line, '\n'); idx >= 0 {
 		line = strings.TrimSpace(line[:idx])
 	}

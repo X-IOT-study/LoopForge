@@ -6,6 +6,7 @@ import (
 	"mime"
 	"net/http"
 
+	"agentflow/internal/config"
 	"agentflow/internal/domain"
 	"agentflow/internal/preview"
 
@@ -21,6 +22,12 @@ type previewsHandlers struct {
 
 func (h *previewsHandlers) previewHost() gin.HandlerFunc {
 	return func(c *gin.Context) {
+		// A local instance has no preview hostname to route; /api/runs/:id/preview
+		// still serves previews, only the subdomain plane is off.
+		if config.LocalMode() {
+			c.Next()
+			return
+		}
 		svc := h.engine.Preview()
 		if svc == nil || !svc.Enabled() {
 			c.Next()

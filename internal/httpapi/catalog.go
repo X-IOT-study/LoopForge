@@ -320,6 +320,9 @@ func (h *catalogHandlers) agents(c *gin.Context) {
 				c.JSON(http.StatusBadRequest, map[string]string{"error": "不支持的 CLI：" + v.ExecutorID})
 				return
 			}
+			if respondLocalModeExecutorUnsupported(c, builtIn.Kind) {
+				return
+			}
 			if err := domain.ValidateAgentEffort(v.Effort, builtIn.Kind); err != nil {
 				c.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
 				return
@@ -780,7 +783,7 @@ func (h *catalogHandlers) workflowNamesReferencingSandbox(id string) []string {
 }
 
 func (h *catalogHandlers) executors(c *gin.Context) {
-	c.JSON(200, repo.BuiltInExecutors())
+	c.JSON(200, localModeExecutors())
 }
 func (h *catalogHandlers) dockerfiles(c *gin.Context) {
 	if c.Request.Method == http.MethodGet {
@@ -1236,6 +1239,9 @@ func (h *catalogHandlers) workflow(c *gin.Context) {
 		builtIn, ok := repo.BuiltInExecutor(agent.ExecutorID)
 		if !ok {
 			c.JSON(http.StatusBadRequest, map[string]string{"error": "不支持的 CLI：" + agent.ExecutorID})
+			return
+		}
+		if respondLocalModeExecutorUnsupported(c, builtIn.Kind) {
 			return
 		}
 		if err := domain.ValidateAgentEffort(agent.Effort, builtIn.Kind); err != nil {
