@@ -27,6 +27,10 @@ const ctx = {
   setTimeout: () => 0,
   clock: 1000,
   performance: { now: () => ctx.clock },
+  // sops.js hides executors the local edition does not offer through a helper
+  // defined in app/agents.js, which this harness does not load.
+  LOCAL_MODE_HIDDEN_EXECUTORS: new Set(['kimi', 'zcode']),
+  localModeExecutorHidden: kind => !!ctx.state.localMode && ctx.LOCAL_MODE_HIDDEN_EXECUTORS.has(String(kind || '').trim()),
 };
 vm.createContext(ctx);
 vm.runInContext(sopsSrc, ctx);

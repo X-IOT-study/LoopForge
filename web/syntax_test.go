@@ -495,14 +495,18 @@ const api = async (path, options = {}) => {
 };
 const $ = () => null, setTimeout = () => {}, location = {origin: 'http://localhost'};
 const document = {activeElement: null, querySelectorAll: () => []};
+// The credential panel filters out executors the local edition does not offer;
+// that helper lives in app/agents.js, which this slice does not load.
+const LOCAL_MODE_HIDDEN_EXECUTORS = new Set(['kimi', 'zcode']);
+const localModeExecutorHidden = kind => !!state.localMode && LOCAL_MODE_HIDDEN_EXECUTORS.has(String(kind || '').trim());
 eval(code.slice(code.indexOf('const CREDENTIAL_GROUPS='), code.indexOf('// 谁能改通用模板')) +
-  ';globalThis.cred={CREDENTIAL_KINDS,CREDENTIAL_GROUPS,kind:credentialKind,get wizard(){return credentialWizard},set wizard(v){credentialWizard=v}};');
+  ';globalThis.cred={CREDENTIAL_KIND_DEFS,CREDENTIAL_GROUPS,kind:credentialKind,get wizard(){return credentialWizard},set wizard(v){credentialWizard=v}};');
 const count = (html, needle) => html.split(needle).length - 1;
 
 // Groups list credentials in a fixed order.
 assert.deepEqual(cred.CREDENTIAL_GROUPS.map(g => g.id), ['platform', 'model']);
-assert.deepEqual(cred.CREDENTIAL_KINDS.filter(k => k.group === 'platform').map(k => k.key), ['gitToken', 'gitSshKey']);
-assert.deepEqual(cred.CREDENTIAL_KINDS.filter(k => k.group === 'model').map(k => k.key), ['codeBuddyApiKey', 'codexApiKey', 'claudeCodeApiKey', 'agentCli.opencode', 'agentCli.cursor', 'agentCli.agy', 'agentCli.kimi', 'agentCli.pi', 'agentCli.dsh', 'agentCli.zcode']);
+assert.deepEqual(cred.CREDENTIAL_KIND_DEFS.filter(k => k.group === 'platform').map(k => k.key), ['gitToken', 'gitSshKey']);
+assert.deepEqual(cred.CREDENTIAL_KIND_DEFS.filter(k => k.group === 'model').map(k => k.key), ['codeBuddyApiKey', 'codexApiKey', 'claudeCodeApiKey', 'agentCli.opencode', 'agentCli.cursor', 'agentCli.agy', 'agentCli.kimi', 'agentCli.pi', 'agentCli.dsh', 'agentCli.zcode']);
 
 // Progress, next-step hint, filter counts and per-group counts.
 const html = credentialPanelHTML(user);
@@ -842,7 +846,12 @@ eval(code.slice(code.indexOf('function executorOptions('), code.indexOf('functio
 for (const id of ['opencode', 'cursor', 'agy', 'kimi', 'pi', 'dsh', 'zcode']) {
   assert.ok(executorOptions(id).includes('value="' + id + '" selected'), id);
 }
-assert.ok(!executorOptions('codex').includes('value="mock"'));
+// The candidate list is whatever bootstrap sent: the server already applies the
+// local-mode filter, so this file holds no executor allowlist of its own and a
+// built-in executor shows up without a frontend change.
+assert.ok(executorOptions('codex').includes('value="mock"'));
+// An id the page never received survives only as a disabled legacy option, so a
+// saved role pointing at it is not silently displayed as CodeBuddy.
 const legacy = executorOptions('legacy-codex');
 assert.ok(legacy.includes('历史执行器 legacy-codex'));
 assert.ok(legacy.includes('value="legacy-codex" selected disabled'));

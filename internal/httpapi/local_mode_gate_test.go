@@ -57,7 +57,7 @@ func TestLocalModeGateMethodSpecialCases(t *testing.T) {
 		path      string
 		wantBlock bool
 	}{
-		{"list users blocked", http.MethodGet, "/api/users", true},
+		{"list users stays open for the single local account", http.MethodGet, "/api/users", false},
 		{"user credentials stay open", http.MethodPut, "/api/users/u1/credentials", false},
 		{"create bind code blocked", http.MethodPost, "/api/runners/bind-codes", true},
 		{"read bind codes stays open", http.MethodGet, "/api/runners/bind-codes", false},

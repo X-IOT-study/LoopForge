@@ -773,6 +773,7 @@ export default function QuickAccessWizard({
   projectId = "",
   sponsoredModel = "",
   sponsoredModels = [],
+  localMode = false,
   onClose,
   onCompleted,
   onCredentialsSaved,
@@ -1192,7 +1193,9 @@ export default function QuickAccessWizard({
   );
   const sshReady = hasSSHKey(selectedSSHRepo);
   const sshRepository = (parsedRepo || defaultRepo)?.provider === "ssh";
-  const codeBuddyReady = Boolean(
+  // 本地模式复用本机 CLI 的登录态，模型与执行不需要个人 Key，因此这一步
+  // 不再是门槛；GitHub/SSH 授权仍然需要自己配。
+  const codeBuddyReady = localMode || Boolean(
     storedUser?.codeBuddyApiKeyConfigured || codeBuddyApiKey.trim(),
   );
   // The CLI gets the stored text as-is: an old value such as china preselects
@@ -1278,7 +1281,7 @@ export default function QuickAccessWizard({
     if (saving) return;
     setError("");
     if (activeStep.id === "auth") {
-      if (!gitReady && !hasSSHKeys && !codeBuddyReady && !sponsoredModel) {
+      if (!localMode && !gitReady && !hasSSHKeys && !codeBuddyReady && !sponsoredModel) {
         setError("请先配置 GitHub Git Token、Git SSH 密钥或 CodeBuddy API Key。");
         return;
       }
@@ -1511,7 +1514,8 @@ export default function QuickAccessWizard({
         rolesCount: roles.length,
         gitReady: Boolean(boundRepo?.provider === "ssh" ? hasSSHKey(parseGongfengRepo(boundRepo.cloneUrl)) : latestUser?.gitTokenConfigured),
         codeBuddyReady: Boolean(
-          latestUser?.codeBuddyApiKeyConfigured ||
+          localMode ||
+            latestUser?.codeBuddyApiKeyConfigured ||
             storedUser?.codeBuddyApiKeyConfigured,
         ),
       });
@@ -1708,7 +1712,9 @@ export default function QuickAccessWizard({
                           <span>
                             CodeBuddy API Key：
                             {completedSummary?.codeBuddyReady
-                              ? "已配置"
+                              ? localMode
+                                ? "本机 CLI 登录（无需 Key）"
+                                : "已配置"
                               : sponsoredModel
                                 ? `未配置。对话和 SOP 都会使用平台共享 Key（可用模型：${sharedModelNames(sponsoredModels, sponsoredModel)}），可以直接开始；配置自己的 Key 后可选用任意模型`
                                 : "未配置。对话可用平台默认模型，但运行 SOP 时节点需要它调模型，请先在个人配置补齐"}
@@ -1889,14 +1895,23 @@ export default function QuickAccessWizard({
                           <div>
                             <strong>CodeBuddy API Key</strong>
                             <span>
-                              {sponsoredModel
-                                ? "可选：未配置时对话和 SOP 使用平台共享模型，配置后可选用其他模型"
-                                : "AI 对话与 SOP 节点调用模型时使用"}
+                              {localMode
+                                ? "本地模式复用本机 CLI 登录，无需填写"
+                                : sponsoredModel
+                                  ? "可选：未配置时对话和 SOP 使用平台共享模型，配置后可选用其他模型"
+                                  : "AI 对话与 SOP 节点调用模型时使用"}
                             </span>
                           </div>
-                          <StatusPill ok={codeBuddyReady} />
+                          <StatusPill ok={codeBuddyReady} okLabel={localMode ? "本机登录" : undefined} />
                         </header>
                         <div className="qa-cred-body">
+                          {localMode ? (
+                            <p className="qa-hint">
+                              对话与 SOP 直接复用本机已登录的 CLI（如 Codex、Claude
+                              Code），无需在此填写 Key；需要换执行器时在对话页选择。
+                            </p>
+                          ) : (
+                            <>
                           <div className="qa-field">
                             <span className="qa-label">网络环境</span>
                             <HarnessSelect
@@ -1943,6 +1958,8 @@ export default function QuickAccessWizard({
                             {codeBuddyWarning ||
                               `${codeBuddyEnvLegacy && codeBuddyEnvChoice === null ? `原来填写的「${storedCodeBuddyEnvRaw}」无法识别，CodeBuddy 实际按国际站连接，点下一步改为当前选择。` : ""}Key 只能在创建它的站点使用：当前选择${codeBuddyEnvInfo.label}（${codeBuddyEnvInfo.site}），「获取 API Key」会打开该站点的密钥页。`}
                           </p>
+                            </>
+                          )}
                         </div>
                       </section>
                     </div>
@@ -2342,7 +2359,9 @@ export default function QuickAccessWizard({
                                 {sshRepository ? "Git SSH" : "GitHub"} {(sshRepository ? sshReady : gitReady) ? "已配置" : "未配置"} ·
                                 CodeBuddy{" "}
                                 {codeBuddyReady
-                                  ? "已配置"
+                                  ? localMode
+                                    ? "本机登录"
+                                    : "已配置"
                                   : sponsoredModel
                                     ? "使用平台共享模型"
                                     : "未配置"}

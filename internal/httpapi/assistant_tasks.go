@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"agentflow/internal/config"
 	"agentflow/internal/domain"
 	"agentflow/internal/repo"
 	"github.com/gin-gonic/gin"
@@ -133,7 +134,8 @@ func (h *assistantHandlers) runTaskNow(c *gin.Context) {
 	user, ok := h.repo.User(current.ID)
 	task, err := loadAssistantTask(h.repo, current.ID, c.Param("id"))
 	engine, _ := assistantModelEngine(task.Model)
-	if key, _ := assistantEngineCredential(user, engine); !ok || key == "" {
+	// 本地版跑在本机已登录的 CLI 上，个人 Key 不是前提（平台模式不变）。
+	if key, _ := assistantEngineCredential(user, engine); !ok || (!config.LocalMode() && key == "") {
 		msg := "请先在个人配置中配置自己的 CodeBuddy API Key"
 		if engine != assistantEngineCodeBuddy {
 			msg = assistantEngineMissingKey(engine)
@@ -229,8 +231,13 @@ func (h *assistantHandlers) executeAssistantTask(ctx context.Context, user domai
 
 	// The task's model picks the CLI; a scheduled run needs the runner's own
 	// key for it (no sponsor), checked before a conversation is opened.
+	if config.LocalMode() {
+		// 本地版只跑本机已登录的 CLI：任务里存的引擎本机没登录时改用它。
+		task.Model = assistantLocalEngineModel(task.Model)
+	}
 	engine, _ := assistantModelEngine(task.Model)
-	if key, _ := assistantEngineCredential(user, engine); key == "" {
+	// 本地版用本机 CLI 登录，不要求负责人账号里存 Key。
+	if key, _ := assistantEngineCredential(user, engine); key == "" && !config.LocalMode() {
 		if engine != assistantEngineCodeBuddy {
 			return fail(assistantEngineMissingKey(engine))
 		}

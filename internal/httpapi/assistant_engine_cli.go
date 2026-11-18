@@ -194,8 +194,12 @@ func prepareAssistantClaudeInvocation(o assistantEngineInvocationOpts) (assistan
 	argv := []string{o.Bin, "-p", "--verbose", "--output-format", "stream-json", "--include-partial-messages",
 		"--max-turns", nativeAssistantUnlimitedTurns, "--system-prompt", o.SystemPrompt,
 		"--mcp-config", mcpPath, "--strict-mcp-config", "--settings", settingsPath, "--setting-sources", "user",
-		"--permission-mode", "bypassPermissions",
-		"--model", o.Model}
+		"--permission-mode", "bypassPermissions"}
+	// An empty model leaves the choice to the CLI: local mode reuses the
+	// host's own configuration, which already names one.
+	if model := strings.TrimSpace(o.Model); model != "" {
+		argv = append(argv, "--model", model)
+	}
 	if !o.Workspace {
 		argv = append(argv, "--disallowedTools", claudeAssistantDisallowedTools)
 	}

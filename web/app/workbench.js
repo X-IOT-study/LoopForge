@@ -382,14 +382,41 @@ function credentialCatalogAction(action,row,catalog,button){
 const CREDENTIAL_RECOMMENDED=['gitToken','codeBuddyApiKey'];
 const CREDENTIAL_PAT_WARNING='请填写 GitHub <b>个人访问令牌（PAT）</b>，为目标仓库授予 <b>Contents</b> 和 <b>Pull requests</b> 的读写权限；少勾权限会导致克隆 / 推送仓库失败。';
 function credentialKind(key){return credentialKinds().find(kind=>kind.key===key)||null}
-function credentialConfigured(kind,user){return !!credentialValue(user,kind.agentCli?kind.key+'.apiKeyConfigured':kind.key+'Configured')}
+// 本地模式用本机 CLI 自己的登录态，模型与执行一组的凭据不是"缺配置"，而是
+// "由本机提供"。平台集成（仓库授权、SSH 密钥）仍然需要自己填。
+// 只有后端确认本机确实登录了该 CLI 才说"本机登录"：`/api/assistant/models` 的
+// engines[].configured 就是宿主登录探测结果，探测不了的 CLI 仍按可用处理。
+function credentialHostEngine(kind){
+  if(!kind)return '';
+  if(kind.agentCli)return kind.agentCli;
+  if(kind.key==='codeBuddyApiKey')return 'codebuddy';
+  if(kind.key==='codexApiKey')return 'codex';
+  if(kind.key==='claudeCodeApiKey')return 'claude-code';
+  return '';
+}
+function credentialHostEngines(){
+  try{const list=window.AgentFlowAssistantModels?.catalog?.()?.engines;return Array.isArray(list)?list:null}catch{return null}
+}
+function credentialHostProvided(kind){
+  if(!state.localMode||!kind||kind.group!=='model')return false;
+  const engines=credentialHostEngines();
+  if(!engines)return true;
+  const engine=engines.find(item=>item&&item.id===credentialHostEngine(kind));
+  return !engine||engine.configured!==false;
+}
+function credentialConfigured(kind,user){return credentialHostProvided(kind)||!!credentialValue(user,kind.agentCli?kind.key+'.apiKeyConfigured':kind.key+'Configured')}
 function credentialUser(){return userById(state.currentUser?.id)||{}}
 function credentialUI(){return state.credentialUI||(state.credentialUI={open:null,filter:'all',closed:{}})}
 function credentialGlyph(name,size=16,cls=''){return `<svg class="agent-icon harness-icon${cls?' '+cls:''}" data-icon="${name}" width="${size}" height="${size}" aria-hidden="true" focusable="false"></svg>`}
 function credentialSpinner(size=14){return credentialGlyph('arc-spinner',size,'credential-spin')}
 function credentialLogo(kind,cls=''){return `<span class="credential-logo${kind.monochrome?' monochrome':''}${cls?' '+cls:''}">${kind.icon?credentialGlyph(kind.icon,18):`<img src="/images/credentials/${kind.logo}.svg" alt="">`}</span>`}
 function hydrateCredentialIcons(root){if(root)window.AgentFlowHarnessIcons?.hydrate?.(root)}
-function credentialNextKind(user){return CREDENTIAL_RECOMMENDED.map(credentialKind).find(kind=>!credentialConfigured(kind,user))||null}
+function credentialNextKind(user){
+  // 本地模式不需要在个人配置里填模型 Key，推荐下一步只剩仓库授权。
+  return CREDENTIAL_RECOMMENDED.map(credentialKind)
+    .filter(kind=>kind&&!(state.localMode&&kind.group==='model'))
+    .find(kind=>!credentialConfigured(kind,user))||null;
+}
 function credentialSecretError(kind,value){
   return '';
 }
@@ -466,6 +493,7 @@ function gitTokenFailure(result){
   return '';
 }
 function credentialStatus(kind,user){
+  if(credentialHostProvided(kind))return 'host';
   if(!credentialConfigured(kind,user))return 'empty';
   if(kind.key!=='gitToken')return 'ok';
   const verify=gitTokenVerifyFor({id:state.currentUser?.id});
@@ -473,14 +501,18 @@ function credentialStatus(kind,user){
   return gitTokenFailure(verify?.result)?'err':'ok';
 }
 function credentialBadgeHTML(status){
-  const lamp={empty:'<span class="hui-lamp is-hollow" aria-hidden="true"><i></i></span>',ok:'<span class="hui-lamp" aria-hidden="true"><i></i></span>',busy:credentialSpinner(12),err:credentialGlyph('alert',12)}[status];
-  const label={empty:'未配置',ok:'已配置',busy:'校验中',err:'有错误'}[status];
-  const tone={empty:'muted',ok:'success',busy:'info',err:'error'}[status];
+  const lamp={empty:'<span class="hui-lamp is-hollow" aria-hidden="true"><i></i></span>',ok:'<span class="hui-lamp" aria-hidden="true"><i></i></span>',host:credentialGlyph('key',12),busy:credentialSpinner(12),err:credentialGlyph('alert',12)}[status];
+  const label={empty:'未配置',ok:'已配置',host:'本机登录',busy:'校验中',err:'有错误'}[status];
+  const tone={empty:'muted',ok:'success',host:'info',busy:'info',err:'error'}[status];
   return `<span class="hui-badge credential-status" data-size="sm" data-tone="${tone}" data-status="${status}" role="status">${lamp}<span class="hui-badge-label">${label}</span></span>`;
 }
 function credentialSubline(kind,user){
   const dot='<i class="credential-dot"></i>',use=`<span>${escapeHTML(kind.use)}</span>`;
-  if(!credentialConfigured(kind,user))return use;
+  if(credentialHostProvided(kind))return `<span>复用本机 ${escapeHTML(kind.name)} 登录，无需个人 API Key</span>${dot}${use}`;
+  // 本地模式下模型与执行一组的"未配置"= 本机还没登录该 CLI，先说清怎么补。
+  if(!credentialConfigured(kind,user))return state.localMode&&kind.group==='model'
+    ?`<span>未检测到本机 ${escapeHTML(kind.name)} 登录：可先在终端登录该 CLI，或直接填写 Key</span>${dot}${use}`
+    :use;
   if(kind.key==='gitToken'){
     const verify=gitTokenVerifyFor({id:state.currentUser?.id}),result=verify?.result,source=`<span>${user.gitTokenOAuth?'工蜂授权':'个人访问令牌'}</span>`;
     if(verify?.busy)return source+dot+'<span class="is-info">正在校验…</span>';
@@ -568,17 +600,19 @@ function credentialEditorHTML(kind,user){
   </div>`;
 }
 function credentialRowMainHTML(kind,user){
-  const ssh=kind.key==='gitSshKey',on=credentialConfigured(kind,user),open=on&&credentialUI().open===kind.key,status=credentialStatus(kind,user);
-  const end=on&&!ssh
+  const ssh=kind.key==='gitSshKey',host=credentialHostProvided(kind),on=credentialConfigured(kind,user),open=on&&credentialUI().open===kind.key,status=credentialStatus(kind,user);
+  // 本机登录的行没有可编辑的密钥，点开只会看到一个空编辑器，因此只展示状态。
+  const end=host?credentialBadgeHTML(status)
+    :on&&!ssh
     ?`${credentialBadgeHTML(status)}${kind.key==='gitToken'?`<span class="credential-tip" data-tip="重新校验"><button type="button" class="credential-btn ghost icon credential-ink git-token-verify" data-credential-act="verify" aria-label="重新校验"${status==='busy'?' disabled':''}>${credentialGlyph('refresh',15)}</button></span>`:''}<span class="credential-chevron">${credentialGlyph('chevron-down',16)}</span>`
     :`${credentialBadgeHTML(status)}<button type="button" class="credential-btn secondary credential-ink" data-credential-act="setup"${ssh?' aria-haspopup="dialog"':''}>${ssh?'管理密钥':'去配置'}<span class="credential-nudge">${credentialGlyph('chevron-right',13)}</span></button>`;
-  const interaction=ssh?'':` role="button" tabindex="0"${on?` aria-expanded="${open}"`:''}`;
+  const interaction=ssh||host?'':` role="button" tabindex="0"${on?` aria-expanded="${open}"`:''}`;
   return `<div class="credential-row-main credential-ink"${interaction}>${credentialLogo(kind,on?'':'is-dim')}<div class="credential-row-who"><b>${escapeHTML(kind.name)}<span>${escapeHTML(kind.short)}</span></b><small>${credentialSubline(kind,user)}</small></div><div class="credential-row-end">${end}</div></div>`;
 }
 function credentialRowHTML(kind,user){
-  const on=credentialConfigured(kind,user),open=on&&credentialUI().open===kind.key;
-  const editor=on&&kind.key!=='gitSshKey'?credentialEditorHTML(kind,user):'';
-  return `<div class="credential-row${on?' is-configured':''}${open?' is-open':''}" data-credential-row="${kind.key}">${credentialRowMainHTML(kind,user)}<div class="credential-editor"><div><div class="credential-editor-inner">${editor}</div></div></div></div>`;
+  const host=credentialHostProvided(kind),on=credentialConfigured(kind,user),open=on&&credentialUI().open===kind.key;
+  const editor=on&&!host&&kind.key!=='gitSshKey'?credentialEditorHTML(kind,user):'';
+  return `<div class="credential-row${on?' is-configured':''}${open?' is-open':''}${host?' is-host':''}" data-credential-row="${kind.key}">${credentialRowMainHTML(kind,user)}<div class="credential-editor"><div><div class="credential-editor-inner">${editor}</div></div></div></div>`;
 }
 function credentialGroupHTML(group,user){
   const kinds=credentialKinds().filter(kind=>kind.group===group.id),done=kinds.filter(kind=>credentialConfigured(kind,user)).length,closed=!!credentialUI().closed[group.id];
@@ -618,6 +652,11 @@ function renderCredentialPanel(){
   if(typeof hydrateGitHubConnections==='function')hydrateGitHubConnections(panel);
   applyCredentialFilter(panel,user);
   hydrateCredentialIcons(panel);
+  // 首次渲染时模型目录可能还没回来，本机登录判定会退化；目录到达后再画一次。
+  if(state.localMode&&!credentialHostEngines()&&!state.credentialHostProbe){
+    state.credentialHostProbe=true;
+    try{window.AgentFlowAssistantModels?.load?.().then(()=>renderCredentialPanel(),()=>{})}catch{}
+  }
 }
 function repaintCredentialRow(key){
   const row=$(`#credentialPanel [data-credential-row="${key}"]`),kind=credentialKind(key);if(!row||!kind)return;
@@ -819,6 +858,8 @@ function toggleCredentialGroup(head){
 function activateCredentialRow(row){
   const key=row.dataset.credentialRow;
   if(key==='gitSshKey')return openGitSSHKeys();
+  // 本机登录的行没有可编辑的密钥，点击不展开编辑器。
+  if(row.classList.contains('is-host'))return;
   return row.classList.contains('is-configured')?toggleCredentialRow(key):openCredentialWizard(key);
 }
 function bindCredentialPanel(panel){
@@ -1185,6 +1226,8 @@ async function renderPersonalSettings(){
   hydrateCredentialIcons(host);
   setTimeout(()=>panel.classList.remove('is-entering'),900);
   // Offer the OAuth shortcut only when the server has a Gongfeng application.
+  // 本地模式没有工蜂 SSO；探测它只会换来一条 403 控制台报错。
+  if(state.localMode)document.querySelectorAll('[data-gongfeng-oauth]').forEach(el=>{el.hidden=true});else
   api('/api/auth/gongfeng',{silent:true}).then(capability=>{state.gongfengOAuthEnabled=!!capability?.enabled;document.querySelectorAll('[data-gongfeng-oauth]').forEach(el=>{el.hidden=!state.gongfengOAuthEnabled})}).catch(()=>{});
   if(storedUser.gitTokenConfigured){
     const cached=gitTokenVerifyFor(user);

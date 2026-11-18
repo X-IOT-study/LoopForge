@@ -390,3 +390,30 @@ func TestCreateDriverSandboxRejectsDockerLocally(t *testing.T) {
 		t.Fatalf("platform mode must not use the local-mode code: %v", err)
 	}
 }
+
+// TestWithPrivateHomeDirKeepsHostHomeInLocalMode proves the assistant and
+// conversation paths cannot redirect HOME/CODEX_HOME at a CLI in local mode:
+// the host login and CLI configuration live in the operator's own profile.
+func TestWithPrivateHomeDirKeepsHostHomeInLocalMode(t *testing.T) {
+	t.Setenv("AGENTFLOW_LOCAL_MODE", "1")
+	for _, provider := range []string{"codex", "claude-code", "codebuddy"} {
+		// The real specs (provider_codex.go, provider_claude.go,
+		// provider_codebuddy.go) set PrivateHome, so the case starts from true
+		// and the assertion below proves the flag is cleared.
+		command := CommandSpec{Argv: []string{"true"}, Provider: provider, PrivateHome: true}.WithPrivateHomeDir(t.TempDir())
+		for _, key := range []string{"HOME", "TMPDIR", "CODEX_HOME", "CLAUDE_CONFIG_DIR", "CODEBUDDY_CONFIG_DIR"} {
+			if value, ok := command.environment[key]; ok {
+				t.Fatalf("%s: local mode must keep the host %s, got %q", provider, key, value)
+			}
+		}
+		if command.PrivateHome {
+			t.Fatalf("%s: local mode must not mark the command private-home", provider)
+		}
+	}
+	t.Setenv("AGENTFLOW_LOCAL_MODE", "")
+	dir := t.TempDir()
+	command := CommandSpec{Argv: []string{"true"}, Provider: "codex"}.WithPrivateHomeDir(dir)
+	if command.environment["HOME"] != dir || command.environment["CODEX_HOME"] != filepath.Join(dir, ".codex") {
+		t.Fatalf("platform mode must keep the private home, got %+v", command.environment)
+	}
+}

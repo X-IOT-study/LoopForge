@@ -34,6 +34,14 @@ Object.assign(dom.window, {
 });
 dom.load('app/hui-select.js');
 dom.load('app/assistant-models.js');
+// orchestrate.js filters executors the local edition does not offer through a
+// helper defined in app/agents.js, which this harness does not load.
+dom.run(`
+  const LOCAL_MODE_HIDDEN_EXECUTORS = new Set(['kimi', 'zcode']);
+  function localModeExecutorHidden(kind) {
+    return !!state.localMode && LOCAL_MODE_HIDDEN_EXECUTORS.has(String(kind || '').trim());
+  }
+`);
 dom.load('orchestrate.js');
 // Keep the real picker, transport and history; isolate canvas animation and
 // asset writes so this test cannot save or publish a workflow.

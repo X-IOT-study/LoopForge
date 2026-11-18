@@ -154,7 +154,7 @@
       <p>运行环境</p>
       <button class="nav" data-cloud-only="runners" data-view="runners"><span class="nav-icon"><svg class="agent-icon harness-icon" data-icon="server" data-icon-motion="idle" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><rect x="3" y="3" width="18" height="7" rx="2"/><rect x="3" y="14" width="18" height="7" rx="2"/><path d="M7 6.5h.01"/><path d="M7 17.5h.01"/></svg></span><span class="nav-label">执行机器</span></button>
       <button class="nav" data-view="dockerfiles" data-nav-match="environments sandboxes" data-nav-icon="layers"><span class="nav-icon"><svg class="agent-icon harness-icon" data-icon="layers" data-icon-motion="idle" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M12 3l9 5-9 5-9-5z"/><path d="M3 13l9 5 9-5"/></svg></span><span class="nav-label">环境资产</span></button>
-      <p>开放与平台</p>
+      <p data-cloud-only="platform">开放与平台</p>
       <button class="nav" data-cloud-only="guide" data-view="guide"><span class="nav-icon"><svg class="agent-icon harness-icon" data-icon="key" data-icon-motion="idle" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><circle cx="8" cy="15" r="4"/><path d="M10.8 12.2 20 3"/><path d="M16 7l3 3"/><path d="M18 5l2 2"/></svg></span><span class="nav-label">访问密钥</span></button>
       <div id="platformNavGroup" data-cloud-only="platform" hidden><button class="nav" data-view="platform"><span class="nav-icon"><svg class="agent-icon harness-icon" data-icon="gate" data-icon-motion="idle" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path class="gate-shield" d="M12 3l8 4v5c0 5-3.5 8-8 9-4.5-1-8-4-8-9V7z"/><path class="gate-check agent-check-draw" pathLength="1" d="m9 12 2 2 4-4"/></svg></span><span class="nav-label">平台管理</span></button></div>
       </div>
@@ -511,7 +511,7 @@
               </div>
             </div>
           </div>
-          <section class="flow-settings-section flow-settings-notifications"><div class="flow-settings-sec-head"><span class="sec-dot"></span><b>SOP 通知</b><small>选一个 Bot，自动接收提醒与完成汇报</small></div><div id="workflowNotificationEditor"></div></section>
+          <section class="flow-settings-section flow-settings-notifications" data-cloud-only="sopNotifications"><div class="flow-settings-sec-head"><span class="sec-dot"></span><b>SOP 通知</b><small>选一个 Bot，自动接收提醒与完成汇报</small></div><div id="workflowNotificationEditor"></div></section>
         </div>
 
         <div class="flow-settings-footer">
@@ -1171,7 +1171,7 @@
               <p class="schedule-field-hint">到点以与主页 AI 对话相同的完全权限执行提示词，可按需读写平台、启动 SOP、操作工作区及浏览器。</p>
             </div>
           </div>
-          <div data-schedule-kind="assistant" class="schedule-notifications" hidden><h3>Bot 通知</h3><p class="schedule-field-hint">可把执行结果、AI 摘要或自定义消息发送到项目 Bot。</p><div id="scheduleNotificationEditor"></div></div>
+          <div data-schedule-kind="assistant" class="schedule-notifications" data-cloud-only="scheduleNotifications" hidden><h3>Bot 通知</h3><p class="schedule-field-hint">可把执行结果、AI 摘要或自定义消息发送到项目 Bot。</p><div id="scheduleNotificationEditor"></div></div>
           <div class="schedule-form-actions"><label class="schedule-check"><input name="enabled" type="checkbox" checked> 启用</label><button type="submit" class="button dark small">保存触发配置</button></div>
         </form>
       </section>

@@ -56,6 +56,24 @@ Starting the whole stack with `docker compose up -d` also brings up the `platfor
 
 The process refuses any non-loopback listen address unless `AGENTFLOW_LOCAL_ALLOW_REMOTE=1`; the guard exists to keep a single-user instance unexposed, not to make a container deployment work. Compose's `platform` service defaults to `AGENTFLOW_LOCAL_SANDBOX=docker`, which is exactly why local mode runs the binary on the host instead of that service.
 
+## Seed the catalog
+
+The installer (`scripts/dev.sh`, `scripts/install-schema-extensions.sh`, `scripts/test-container.sh`) applies `migrations/seed/*.sql` for you. The host-process command above does **not**: it only connects and runs the incremental `AutoMigrate` DDL (`repo.Open` never seeds, see `AGENTS.md`). Without the seed the database is structurally fine but empty — no generic templates, no agents, no rules, no sandboxes, no sample project — so SOP lists, the project wizard's default-SOP dropdown and most settings pages render blank.
+
+Apply them once, after `docker compose up -d mysql` and before the first sign-in (each file is `INSERT IGNORE`, so re-running is harmless):
+
+```bash
+# From the host, against the Compose MySQL (default published port 33315).
+mysql -h 127.0.0.1 -P 33315 -u loopforge -p < migrations/seed/001_public_catalog.sql
+mysql -h 127.0.0.1 -P 33315 -u loopforge -p < migrations/seed/002_welcome_project.sql
+
+# Or pipe the files through the container.
+docker compose exec -T mysql sh -c 'mysql -u loopforge -p"$MYSQL_PASSWORD"' < migrations/seed/001_public_catalog.sql
+docker compose exec -T mysql sh -c 'mysql -u loopforge -p"$MYSQL_PASSWORD"' < migrations/seed/002_welcome_project.sql
+```
+
+`001_public_catalog.sql` seeds the four generic delivery templates (`generic-backend-delivery`, `generic-frontend-delivery`, `generic-product-delivery`), the `welcome-workflow`/`issue-fix-production` workflows, one agent, one rule, two sandboxes and one dockerfile. `002_welcome_project.sql` adds the 「LoopForge 体验项目」 project. That project's owner is looked up by login name `admin`; on a local edition the account is `local`, so the project is created without an owner — assign it to yourself in the project settings after signing in.
+
 ## First start: set the password
 
 Open `http://127.0.0.1:8090/`. With no account yet, the login page shows a single field — **设置本地管理员密码** / *Set the local administrator password* — and explains that the account and data stay on this machine. On submit the browser calls `POST /api/auth/register` with only a password; the server creates the account with login name `local` and makes it the platform administrator.

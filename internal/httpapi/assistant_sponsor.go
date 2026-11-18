@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 
+	"agentflow/internal/config"
 	"agentflow/internal/domain"
 	"agentflow/internal/repo"
 )
@@ -36,6 +37,11 @@ func (h *assistantHandlers) assistantSharedKey() (repo.SharedCodeBuddyKey, bool)
 // may use; everything else (ID, permissions, Git credentials) stays the
 // caller's own.
 func (h *assistantHandlers) assistantChatUser(user domain.User) (chatUser domain.User, shared []string, ok bool) {
+	// Local mode chats on the machine's own CLI login: there is no personal
+	// key to require and no shared key to borrow.
+	if config.LocalMode() {
+		return user, nil, true
+	}
 	if strings.TrimSpace(user.CodeBuddyAPIKey) != "" {
 		return user, nil, true
 	}

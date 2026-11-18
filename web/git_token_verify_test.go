@@ -62,6 +62,10 @@ const document={querySelectorAll:()=>[],activeElement:null};
 const window={};
 const location={search:'',pathname:'/',hash:'',origin:'http://localhost'};
 let replaced=0;const history={replaceState(){replaced++}};
+// The credential panel filters out executors the local edition does not offer;
+// that helper lives in app/agents.js, which this slice does not load.
+const LOCAL_MODE_HIDDEN_EXECUTORS=new Set(['kimi','zcode']);
+const localModeExecutorHidden=kind=>!!state.localMode&&LOCAL_MODE_HIDDEN_EXECUTORS.has(String(kind||'').trim());
 eval(code.slice(code.indexOf('const CREDENTIAL_GROUPS='),code.indexOf('// 谁能改通用模板'))+';globalThis.cred={kind:credentialKind};');
 const gitToken=cred.kind('gitToken');
 (async()=>{

@@ -1,6 +1,8 @@
 package runtime
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 
+	"agentflow/internal/config"
 	"agentflow/internal/domain"
 )
 
@@ -507,6 +510,48 @@ func ApplyAgentCLICredential(kind string, cred ProviderCredential, options Agent
 		return nil, nil, fmt.Errorf("unknown agent CLI %q", kind)
 	}
 	return argv, env, nil
+}
+
+// ApplyAgentCLILocalModel points a CLI at the model the operator picked from
+// their own configuration. Local mode leaves the host's config files alone, so
+// the model travels on the command line where the CLI takes one, and otherwise
+// in a patch file the CLI is told to apply for this run only.
+func ApplyAgentCLILocalModel(kind, model string, argv []string) ([]string, error) {
+	model = strings.TrimSpace(model)
+	if !config.LocalMode() || model == "" || kind != AgentCLIDeepSeek {
+		return argv, nil
+	}
+	// DeepSeek Harness names a model as provider plus ID, and its own IDs
+	// carry slashes, so only the first segment is the provider.
+	provider, id, ok := strings.Cut(model, "/")
+	if !ok || provider == "" || id == "" {
+		return argv, nil
+	}
+	base, err := os.UserCacheDir()
+	if err != nil || base == "" {
+		return argv, fmt.Errorf("定位缓存目录失败: %w", err)
+	}
+	dir := filepath.Join(base, "agentflow", "local-models")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return argv, err
+	}
+	patch := []any{map[string]any{"id": "agent-default-model", "config": map[string]any{"provider": provider, "model": id}}}
+	data, err := json.MarshalIndent(patch, "", "  ")
+	if err != nil {
+		return argv, err
+	}
+	sum := sha256.Sum256([]byte(model))
+	path := filepath.Join(dir, "dsh-"+hex.EncodeToString(sum[:8])+".json")
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		return argv, err
+	}
+	// Launcher flags precede the profile's own arguments:
+	// dsh --profile <name> --patch … app-args.
+	if len(argv) < 3 {
+		return argv, nil
+	}
+	head := append([]string{}, argv[:3]...)
+	return append(append(head, "--patch", path), argv[3:]...), nil
 }
 
 // agentCLIPiAPI maps a wire protocol to the pi-ai api name shared by Pi and

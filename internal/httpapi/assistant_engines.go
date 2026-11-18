@@ -62,6 +62,22 @@ func assistantModelEngine(id string) (engine, model string) {
 	return assistantEngineCodeBuddy, id
 }
 
+// assistantHostModel empties a CLI engine's placeholder model in local mode so
+// the CLI falls back to the model its own host configuration names. "default"
+// is the catalog's "CLI 默认模型" entry, not a model any provider serves, so
+// passing it through makes the CLI reject the turn. CodeBuddy keeps its model:
+// it is part of the LoopForge-managed configuration, not the host's.
+func assistantHostModel(engine, model string) string {
+	model = strings.TrimSpace(model)
+	if !config.LocalMode() || engine == assistantEngineCodeBuddy {
+		return model
+	}
+	if model == "default" {
+		return ""
+	}
+	return model
+}
+
 // assistantEngineOption is one entry of the chat composer's CLI switch.
 // Credential names the 个人配置 field that enables it.
 type assistantEngineOption struct {
@@ -92,14 +108,32 @@ func assistantEngineOptions(user domain.User, sponsored bool) []assistantEngineO
 	out := make([]assistantEngineOption, 0, len(engines))
 	for _, engine := range engines {
 		key, _ := assistantEngineCredential(user, engine)
+		// Local mode runs on the machine's own CLI logins, so a personal key
+		// is never what enables an engine — the host login is. Reporting the
+		// host state keeps the switch honest: a CLI the operator never logged
+		// into stays unconfigured instead of failing on the first turn.
+		configured := key != "" || (engine == assistantEngineCodeBuddy && sponsored)
+		if config.LocalMode() {
+			configured = assistantHostLoginAvailable(engine)
+		}
 		out = append(out, assistantEngineOption{
 			ID:         engine,
 			Name:       assistantEngineLabel(engine),
-			Configured: key != "" || (engine == assistantEngineCodeBuddy && sponsored),
+			Configured: configured,
 			Credential: assistantEngineCredentialField(engine),
 		})
 	}
 	return out
+}
+
+// assistantHostLoginAvailable reports whether a CLI can run on the operator's
+// own login in local mode. Engines whose login cannot be probed stay
+// available: a false negative would hide a working CLI from the switch.
+func assistantHostLoginAvailable(engine string) bool {
+	if runtime.LocalCredentialStrength(engine) != runtime.LocalCredentialConfirmed {
+		return true
+	}
+	return runtime.LocalCLILoginAvailable(engine)
 }
 
 func assistantEngineLabel(engine string) string {
@@ -172,15 +206,41 @@ func assistantEngineBuiltinModels(engine string) []assistantDiscoveredModel {
 // assistantValidEngineModel guards model IDs that reach a CLI argument or a
 // TOML config override.
 func assistantValidEngineModel(model string) bool {
-	if model == "" || len(model) > 128 {
-		return false
-	}
-	for _, r := range model {
-		if r <= ' ' || r == 0x7f || r == '"' || r == '\'' || r == '`' || r == '\\' {
-			return false
+	return runtime.LocalModelNameOK(model)
+}
+
+// firstPositive returns the first value above zero, 0 when none is.
+func firstPositive(values ...int) int {
+	for _, value := range values {
+		if value > 0 {
+			return value
 		}
 	}
-	return true
+	return 0
+}
+
+// assistantHostEngineModels lists the models the machine's own CLI
+// configuration points at: the gateway its Base URL names, or the models its
+// config already spells out. Local mode only — without a Base URL of the
+// operator's own the CLI runs on this configuration, so it, not the built-in
+// catalog, says which models exist.
+func assistantHostEngineModels(ctx context.Context, engine string) []assistantDiscoveredModel {
+	host, ok := runtime.HostModelSource(engine)
+	if !ok {
+		return nil
+	}
+	if host.BaseURL != "" {
+		if listed := cachedAssistantEngineDiscovery(ctx, host.Anthropic, host.APIKey, host.BaseURL); len(listed) > 0 {
+			return listed
+		}
+	}
+	// The gateway is unreachable or publishes no list: the names the config
+	// gives are still the ones the CLI can run.
+	out := make([]assistantDiscoveredModel, 0, len(host.Models))
+	for _, model := range host.Models {
+		out = append(out, assistantDiscoveredModel{ID: model.ID, Name: model.Name, Efforts: model.Efforts, DefaultEffort: model.DefaultEffort})
+	}
+	return out
 }
 
 // assistantConversationEngine is the CLI that wrote the conversation's latest
@@ -264,7 +324,9 @@ func assistantEngineMissingKey(engine string) string {
 func (h *assistantHandlers) assistantTurnUser(stored domain.User, model string) (domain.User, string, string) {
 	engine, _ := assistantModelEngine(model)
 	if engine != assistantEngineCodeBuddy {
-		if key, _ := assistantEngineCredential(stored, engine); key == "" {
+		// Local mode has no personal keys: the CLI runs with the machine's
+		// own login, so the missing-key gate does not apply.
+		if key, _ := assistantEngineCredential(stored, engine); key == "" && !config.LocalMode() {
 			return stored, "", assistantEngineMissingKey(engine)
 		}
 		user, _, _ := h.assistantChatUser(stored)
@@ -272,6 +334,11 @@ func (h *assistantHandlers) assistantTurnUser(stored domain.User, model string) 
 	}
 	user, shared, ok := h.assistantChatUser(stored)
 	if !ok {
+		// Local mode has no key to demand: the turn runs on the machine's own
+		// CLI login, so the caller's own record is what it runs as.
+		if config.LocalMode() {
+			return stored, model, ""
+		}
 		return stored, "", "请先在个人配置中配置自己的 CodeBuddy API Key"
 	}
 	if len(shared) > 0 {
@@ -293,10 +360,29 @@ func assistantAllowedUserModel(id string, catalog assistantModelCatalog, user do
 	if engine == assistantEngineCodeBuddy {
 		return assistantAllowedModel(id, catalog)
 	}
-	if key, _ := assistantEngineCredential(user, engine); key == "" || !assistantValidEngineModel(model) {
+	// Local mode runs on the machine's own CLI login, so a well-formed CLI
+	// model needs no personal key there.
+	if key, _ := assistantEngineCredential(user, engine); (key == "" && !config.LocalMode()) || !assistantValidEngineModel(model) {
 		return catalog.Default
 	}
 	return engine + ":" + model
+}
+
+// assistantLocalEngineModel rewrites a stored scheduled-task model to a CLI
+// this machine can actually run. A task keeps the engine it was saved with, so
+// the local edition must not fail a run over a CLI the operator never logged
+// into: it falls back to the first engine whose host login works.
+func assistantLocalEngineModel(model string) string {
+	engine, _ := assistantModelEngine(model)
+	if assistantHostLoginAvailable(engine) {
+		return model
+	}
+	for _, candidate := range assistantCLIEngines() {
+		if assistantHostLoginAvailable(candidate) {
+			return candidate + ":default"
+		}
+	}
+	return model
 }
 
 // assistantScheduledModel normalizes the model of an AI scheduled task on
@@ -323,7 +409,9 @@ func assistantEngineModels(ctx context.Context, user domain.User) []assistantMod
 	var out []assistantModel
 	for _, engine := range assistantCLIEngines() {
 		key, baseURL := assistantEngineCredential(user, engine)
-		if key == "" {
+		// Local mode lists the built-in CLI models even without a key: the
+		// engine is configured by the machine's own login.
+		if key == "" && !config.LocalMode() {
 			continue
 		}
 		protocol := assistantEngineProtocol(user, engine)
@@ -338,6 +426,9 @@ func assistantEngineModels(ctx context.Context, user domain.User) []assistantMod
 		}
 		if len(listed) == 0 && baseURL != "" {
 			listed = cachedAssistantEngineDiscovery(ctx, assistantEngineAnthropicModels(engine, protocol), key, baseURL)
+		}
+		if len(listed) == 0 && baseURL == "" {
+			listed = assistantHostEngineModels(ctx, engine)
 		}
 		// Cursor's list comes from the CLI; the saved one (the last list
 		// saveCursorCatalog kept) answers until a fresh one is cached.
@@ -375,6 +466,11 @@ type assistantDiscoveredModel struct {
 	// CLI's list (domain.CLIModel).
 	Efforts       map[string]string
 	DefaultEffort string
+	// ContextWindow and MaxOutputTokens are what the gateway publishes for the
+	// model. Codex sizes a thread from model metadata it keeps itself, which
+	// says nothing about a gateway model, so a turn it runs needs these.
+	ContextWindow   int
+	MaxOutputTokens int
 }
 
 type assistantDiscoveryEntry struct {
@@ -545,9 +641,13 @@ func discoverAssistantEngineModels(ctx context.Context, anthropic bool, apiKey, 
 		}
 		var payload struct {
 			Data []struct {
-				ID          string `json:"id"`
-				Name        string `json:"name"`
-				DisplayName string `json:"display_name"`
+				ID              string `json:"id"`
+				Name            string `json:"name"`
+				DisplayName     string `json:"display_name"`
+				ContextLength   int    `json:"context_length"`
+				ContextWindow   int    `json:"context_window"`
+				MaxOutputTokens int    `json:"max_output_tokens"`
+				MaxOutputLength int    `json:"max_output_length"`
 			} `json:"data"`
 		}
 		if err := json.Unmarshal(body, &payload); err != nil {
@@ -565,7 +665,12 @@ func discoverAssistantEngineModels(ctx context.Context, anthropic bool, apiKey, 
 			if name == "" {
 				name = strings.TrimSpace(item.Name)
 			}
-			out = append(out, assistantDiscoveredModel{ID: id, Name: truncateRunes(name, 64)})
+			out = append(out, assistantDiscoveredModel{
+				ID:              id,
+				Name:            truncateRunes(name, 64),
+				ContextWindow:   firstPositive(item.ContextLength, item.ContextWindow),
+				MaxOutputTokens: firstPositive(item.MaxOutputTokens, item.MaxOutputLength),
+			})
 			if len(out) == assistantDiscoveryMaxModels {
 				break
 			}

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   api,
   write,
@@ -40,14 +40,26 @@ export const EXECUTORS = [
   { id: "dsh", icon: "terminal", label: "DeepSeek Harness", detail: "使用 DeepSeek Harness 与个人 API Key。" },
   { id: "zcode", icon: "terminal", label: "ZCode", detail: "使用 ZCode 与个人 API Key。" },
 ];
-const EXECUTOR_KEY = "loopforge.assistant.executor";
-function knownExecutor(id) {
-  if (id === "claude") return "claude-code";
-  return EXECUTORS.some((item) => item.id === id) ? id : "codebuddy";
+// Local mode runs every engine on the machine's own CLI login, and the
+// cloud-only executors are not available there (mirrors
+// config.LocalModeSupportsExecutor).
+const LOCAL_HIDDEN_EXECUTORS = new Set(["kimi", "zcode"]);
+function executorsFor(localMode) {
+  if (!localMode) return EXECUTORS;
+  return EXECUTORS.filter((item) => !LOCAL_HIDDEN_EXECUTORS.has(item.id)).map(
+    (item) => ({ ...item, detail: "复用本机 CLI 登录，无需个人 API Key。" }),
+  );
 }
-function storedExecutor() {
+const EXECUTOR_KEY = "loopforge.assistant.executor";
+function knownExecutor(id, localMode = false) {
+  if (id === "claude") return "claude-code";
+  return executorsFor(localMode).some((item) => item.id === id)
+    ? id
+    : "codebuddy";
+}
+function storedExecutor(localMode = false) {
   try {
-    return knownExecutor(localStorage.getItem(EXECUTOR_KEY));
+    return knownExecutor(localStorage.getItem(EXECUTOR_KEY), localMode);
   } catch {
     return "codebuddy";
   }
@@ -100,6 +112,9 @@ export function useChat() {
     [effort, setEffort] = useState(""),
     [sponsoredModels, setSponsoredModels] = useState([]),
     [executor, setExecutorState] = useState(storedExecutor),
+    // Set from /api/auth/current: local mode has no cloud pool and no
+    // per-user API keys, so the executor list and copy differ.
+    [localMode, setLocalMode] = useState(false),
     [providerCatalogs, setProviderCatalogs] = useState({}),
     [generation, setGeneration] = useState(null),
     [stopRequest, setStopRequest] = useState(null),
@@ -115,6 +130,7 @@ export function useChat() {
     // A queued message sent with "send now": it interrupts the running reply
     // and stays on screen until the server's follow-up turn has started.
     [steering, setSteering] = useState(null);
+  const executors = useMemo(() => executorsFor(localMode), [localMode]);
   const executionMachines = useExecutionMachines(
     user?.isGuest ? null : user?.id,
     submitting || generation?.status === "running",
@@ -181,7 +197,7 @@ export function useChat() {
       // A new conversation starts on the platform default, not on whatever
       // model the previously opened conversation used.
       if (!id) {
-        const preferred = storedExecutor();
+        const preferred = storedExecutor(localMode);
         setExecutorState(preferred);
         const next = engineModels(models, preferred);
         if (preferred === "codebuddy") setModel(defaultModel.current || next[0]?.id || "");
@@ -194,7 +210,7 @@ export function useChat() {
       if (id) setRevealId(id);
       changeURL(id);
     },
-    [changeURL, models, executionMachines.resetMachine],
+    [changeURL, localMode, models, executionMachines.resetMachine],
   );
   const newChat = useCallback(() => {
     setDraftIssueId("");
@@ -214,6 +230,26 @@ export function useChat() {
           api("/api/sandboxes"),
         ]);
         if (!current) return;
+        const local = auth.localMode === true;
+        setLocalMode(local);
+        // In local mode the candidates are the machine's own CLI logins, and a
+        // CLI that was never logged into cannot run a turn. The catalog keeps
+        // one entry per engine with the host state, so fall back to the first
+        // engine this machine can actually run instead of starting on a
+        // default that fails its first message.
+        const engineStates = Array.isArray(catalog?.engines) ? catalog.engines : [];
+        const hostReady = (id) => {
+          const engine = engineStates.find((item) => item.id === id);
+          return !engine || engine.configured !== false;
+        };
+        setExecutorState((old) => {
+          const kept = executorsFor(local).some((item) => item.id === old)
+            ? old
+            : knownExecutor(old, local);
+          if (!local || hostReady(kept)) return kept;
+          const ready = executorsFor(local).find((item) => hostReady(item.id));
+          return ready ? ready.id : kept;
+        });
         setUser({ ...auth.user, ...users.find((u) => u.id === auth.user.id) });
         setUsers(users || []);
         setProjects(projectRows || []);
@@ -258,7 +294,7 @@ export function useChat() {
         // A conversation stays on the CLI that answered it. Replies saved before
         // model prefixes keep that CLI on the session executor.
         const locked = conversationEngine(stored.messages, models, stored.executor);
-        setExecutorState(knownExecutor(locked || stored.executor));
+        setExecutorState(knownExecutor(locked || stored.executor, localMode));
         setModel(stored.model || defaultModel.current || models[0]?.id || "");
         setEffort(stored.effort || "");
         setProjectId(stored.projectId || "");
@@ -278,7 +314,7 @@ export function useChat() {
       current = false;
       clearTimeout(timer);
     };
-  }, [activeId, ready, syncProject]);
+  }, [activeId, ready, localMode, syncProject]);
   useEffect(() => {
     if (!ready) return;
     const timer = setInterval(
@@ -419,10 +455,13 @@ export function useChat() {
         timer = setTimeout(poll, g.status === "running" ? 200 : 2000);
       } catch (e) {
         if (cancelled) return;
-        if (e.status !== 404) {
-          connectionError = e.status ? e.message : "连接暂时中断，正在重连…";
-          setError(connectionError);
-        }
+        // 404 means this session has no generation yet (an old session that was
+        // never run, or one that finished before this page loaded). Retrying
+        // can never succeed, so stop; a new turn changes generation?.id and
+        // restarts this effect from the beginning.
+        if (e.status === 404) return;
+        connectionError = e.status ? e.message : "连接暂时中断，正在重连…";
+        setError(connectionError);
         timer = setTimeout(poll, 2000);
       }
     };
@@ -432,7 +471,7 @@ export function useChat() {
       clearTimeout(timer);
       source?.close();
     };
-  }, [activeId, ready, refreshSessions]);
+  }, [activeId, ready, refreshSessions, generation?.id]);
   const selectProject = useCallback(
     async (id, { external = false } = {}) => {
       const current = sessionRef.current;
@@ -519,7 +558,10 @@ export function useChat() {
   // Without their own key users chat on the platform's shared key, limited to
   // the models the administrator allowed (the first is the default).
   const sponsoredModel = sponsoredModels[0] || "";
-  const sponsored = codeBuddy && missingKey && !user.isGuest && !!sponsoredModel;
+  // Local mode never borrows the platform shared key: the CLI runs on the
+  // machine's own login.
+  const sponsored =
+    !localMode && codeBuddy && missingKey && !user.isGuest && !!sponsoredModel;
   const sharedModelFor = (id) => (sponsoredModels.includes(id) ? id : sponsoredModel);
   const activeModel = sponsored ? sharedModelFor(model) : model;
   const activeEffort = modelEffort(executorModels.find((m) => m.id === activeModel), effort);
@@ -540,7 +582,7 @@ export function useChat() {
   const chooseExecutor = useCallback(
     (id) => {
       if (id === "claude") id = "claude-code";
-      if (!EXECUTORS.some((item) => item.id === id) || id === executor) return;
+      if (!executors.some((item) => item.id === id) || id === executor) return;
       const locked = conversationEngine(sessionRef.current?.messages, models, sessionRef.current?.executor);
       try {
         localStorage.setItem(EXECUTOR_KEY, id);
@@ -552,7 +594,7 @@ export function useChat() {
       setModel(next[0]?.id || catalog?.default || (id === "codebuddy" ? defaultModel.current : "default"));
       if (locked && locked !== id) open(null);
     },
-    [executor, models, open, providerCatalogs],
+    [executor, executors, models, open, providerCatalogs],
   );
   const chooseModel = useCallback(
     (id) => {
@@ -754,6 +796,7 @@ export function useChat() {
     // this page loaded.
     if (
       codeBuddy &&
+      !localMode &&
       !sponsoredModel &&
       users.find((u) => u.id === user?.id)?.codeBuddyApiKeyConfigured ===
         undefined &&
@@ -1233,7 +1276,8 @@ export function useChat() {
     selectSandbox,
     models: executorModels,
     executor,
-    executors: EXECUTORS,
+    executors: executors,
+    localMode: localMode,
     setExecutor: chooseExecutor,
     sessions,
     session,

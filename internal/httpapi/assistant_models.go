@@ -183,14 +183,34 @@ func cachedCLIModels(environment string) []string {
 func (h *assistantHandlers) models(c *gin.Context) {
 	if raw := strings.TrimSpace(c.Query("executor")); raw != "" && assistantExecutor(raw) != "codebuddy" {
 		id := assistantExecutor(raw)
-		catalog, ok := executorModelCatalogs()[id]
+		// The catalog is keyed by executor id, and Claude's id ("claude")
+		// differs from the engine name the chat sends ("claude-code"); without
+		// this alias the chat's model probe answers 400.
+		catalogKey := id
+		if catalogKey == assistantEngineClaude {
+			catalogKey = "claude"
+		}
+		catalog, ok := executorModelCatalogs()[catalogKey]
 		if !ok {
 			c.JSON(400, gin.H{"error": "不支持的执行器"})
 			return
 		}
-		result := assistantModelCatalog{Default: "default", Models: []assistantModel{{ID: "default", Name: "CLI default", Family: map[string]string{"codex": "gpt", "claude": "claude"}[id]}}}
-		for _, item := range catalog.Models {
-			result.Models = append(result.Models, assistantModel{ID: item.ID, Name: item.Name, Family: map[string]string{"codex": "gpt", "claude": "claude"}[id]})
+		family := map[string]string{"codex": "gpt", "claude": "claude"}[catalogKey]
+		result := assistantModelCatalog{Default: "default", Models: []assistantModel{{ID: "default", Name: "CLI default", Family: family}}}
+		// Local mode: this CLI talks to the machine's own gateway, so it, not the
+		// built-in catalog, publishes the models the CLI can run.
+		hosted := assistantHostEngineModels(c.Request.Context(), id)
+		if len(hosted) == 0 {
+			for _, item := range catalog.Models {
+				hosted = append(hosted, assistantDiscoveredModel{ID: item.ID, Name: item.Name})
+			}
+		}
+		for _, item := range hosted {
+			name := strings.TrimSpace(item.Name)
+			if name == "" {
+				name = item.ID
+			}
+			result.Models = append(result.Models, assistantModel{ID: item.ID, Name: name, Family: assistantModelFamily(item.ID)})
 		}
 		c.JSON(200, result)
 		return
@@ -301,8 +321,14 @@ func assistantListedModel(id, name, credits string) assistantModel {
 
 func assistantModelFamily(id string) string {
 	id = strings.ToLower(id)
+	// A gateway model id is "vendor/model" (group/deepseek-v4.1-flash,
+	// api-xcdw-us/claude-opus-5-5): the family is named by the model, so the
+	// vendor prefix is dropped before it is matched.
+	if at := strings.LastIndex(id, "/"); at >= 0 && at+1 < len(id) {
+		id = id[at+1:]
+	}
 	switch {
-	case strings.HasPrefix(id, "claude"):
+	case strings.HasPrefix(id, "claude"), strings.HasPrefix(id, "sonnet"), strings.HasPrefix(id, "opus"), strings.HasPrefix(id, "haiku"), strings.HasPrefix(id, "fable"):
 		return "claude"
 	case strings.HasPrefix(id, "gpt") || strings.Contains(id, "codex"):
 		return "gpt"
@@ -310,6 +336,8 @@ func assistantModelFamily(id string) string {
 		return "glm"
 	case strings.HasPrefix(id, "gemini"):
 		return "gemini"
+	case strings.HasPrefix(id, "qwen") || strings.HasPrefix(id, "qmodel"):
+		return "qwen"
 	case strings.HasPrefix(id, "kimi"):
 		return "kimi"
 	case strings.HasPrefix(id, "deepseek"):

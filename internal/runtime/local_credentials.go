@@ -79,6 +79,10 @@ var localCredentialEnvs = map[string][]string{
 // confirmed by environment only (tech-design §4.1).
 var localCredentialFiles = map[string][]string{
 	"codex": {".codex/auth.json"},
+	// DeepSeek Harness keeps its gateway credential in .dsh/.env, which its
+	// settings.yaml names by apiKeyEnv; a configured gateway is what makes the
+	// CLI runnable, and that is the settings file.
+	"dsh": {".dsh/settings.yaml"},
 }
 
 // localProviderLoginCommand is the terminal command that logs the host CLI in,

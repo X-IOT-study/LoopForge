@@ -43,9 +43,12 @@ func localModeBlockedPath(method, path string) bool {
 			return true
 		}
 	}
+	// /api/users GET is deliberately absent: the assistant, the quick-access
+	// wizard and every member picker load it on first paint, and rejecting it
+	// kills their whole bootstrap. Local mode serves the single local account
+	// instead (usersHandlers.users), so the list stays truthful without
+	// exposing account administration.
 	switch path {
-	case "/api/users":
-		return method == http.MethodGet
 	case "/api/runners/bind-codes":
 		return method == http.MethodPost
 	}

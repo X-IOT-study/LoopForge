@@ -1403,6 +1403,7 @@ func runAssistantCLI(ctx context.Context, req assistantCLIRequest, user domain.U
 		}
 	}
 	engine, engineModel := assistantModelEngine(req.Model)
+	engineModel = assistantHostModel(engine, engineModel)
 	attempt := assistantDiagnosticsFrom(ctx).begin(engine, engineModel, req.Resume, user)
 	defer func() { attempt.finish(returnedErr) }()
 	if engine != assistantEngineCodeBuddy && (req.ReportOnly || (!req.Native && !req.ReviewOnly)) {

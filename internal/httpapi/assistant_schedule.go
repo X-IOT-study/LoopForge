@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"agentflow/internal/config"
 	"agentflow/internal/domain"
 )
 
@@ -57,11 +58,16 @@ func (h *assistantHandlers) prepareScheduleJob(job domain.ScheduleJob) (string, 
 // they need. A scheduled run does not borrow the platform shared CodeBuddy key.
 func (h *assistantHandlers) scheduleJobAssistantUser(job domain.ScheduleJob, model string) (domain.User, error) {
 	engine, _ := assistantModelEngine(model)
+	local := config.LocalMode()
 	try := func(id int64) (domain.User, bool) {
 		if id == 0 || h.repo == nil {
 			return domain.User{}, false
 		}
 		user, ok := h.repo.User(id)
+		if local {
+			// 本地版执行在本机已登录的 CLI 上，账号里不需要存 Key。
+			return user, ok
+		}
 		key, _ := assistantEngineCredential(user, engine)
 		return user, ok && key != ""
 	}
@@ -74,6 +80,15 @@ func (h *assistantHandlers) scheduleJobAssistantUser(job domain.ScheduleJob, mod
 		if user, ok := try(job.OwnerUserID); ok {
 			return user, nil
 		}
+	}
+	if local {
+		// 本地版只有一个账号：项目没配 Owner 时由它负责执行。
+		for _, candidate := range h.repo.Users() {
+			if candidate.ID > 0 {
+				return candidate, nil
+			}
+		}
+		return domain.User{}, fmt.Errorf("执行提示词需要一个负责该项目的账号")
 	}
 	return domain.User{}, fmt.Errorf("执行提示词需要项目 Owner 的 %s API Key：请在该账号的个人配置中配置", assistantEngineLabel(engine))
 }

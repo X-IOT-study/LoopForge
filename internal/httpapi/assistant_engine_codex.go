@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -11,6 +12,33 @@ import (
 
 	"agentflow/internal/runtime"
 )
+
+// assistantCodexModelCatalog hands codex a catalog covering the host gateway's
+// models, so a turn on one does not run on codex's guessed context window. It
+// returns "" when there is nothing to extend, which leaves codex exactly as the
+// operator's own configuration has it.
+func assistantCodexModelCatalog(o assistantEngineInvocationOpts) string {
+	discovered := assistantHostEngineModels(context.Background(), assistantEngineCodex)
+	if len(discovered) == 0 {
+		return ""
+	}
+	entries := make([]runtime.HostModelCatalogEntry, 0, len(discovered))
+	for _, model := range discovered {
+		entries = append(entries, runtime.HostModelCatalogEntry{
+			ID:              model.ID,
+			Name:            model.Name,
+			ContextWindow:   model.ContextWindow,
+			MaxOutputTokens: model.MaxOutputTokens,
+		})
+	}
+	path, err := runtime.WriteCodexModelCatalog(filepath.Join(o.Root, "codex-model-catalog.json"), entries)
+	if err != nil {
+		// A catalog the CLI rejects fails every turn, so running on the guess is
+		// the better failure mode.
+		return ""
+	}
+	return path
+}
 
 // prepareAssistantCodexInvocation runs one chat turn on `codex app-server`.
 // `codex exec --json` reports only finished items; the app server also
@@ -43,6 +71,16 @@ func prepareAssistantCodexInvocation(o assistantEngineInvocationOpts) (assistant
 	argv = append(argv, codexAssistantMCPArgs(servers)...)
 	if effort := strings.TrimSpace(o.Effort); effort != "" {
 		argv = append(argv, "-c", "model_reasoning_effort="+strconv.Quote(effort))
+	}
+	// Codex sizes a thread from model metadata it keeps itself and guesses a
+	// context window for a model it does not know - a guess the platform's own
+	// prompt and tools overrun on the first turn. The override below is the only
+	// place that metadata is accepted, and only for models the host's catalog
+	// does not describe yet; a turn on an unknown model starts on the guess.
+	// -c model_context_window / model_max_output_tokens were tried first and the
+	// CLI ignores both (the second is reported as deprecated).
+	if catalogPath := assistantCodexModelCatalog(o); catalogPath != "" {
+		argv = append(argv, "-c", "model_catalog_json="+strconv.Quote(catalogPath))
 	}
 	// BindCodex inserts its provider overrides before the last argument.
 	argv = append(argv, "--stdio")
@@ -189,7 +227,12 @@ func (s *codexAppServer) response(message codexRPCMessage) []string {
 		// App-server builds each thread's hook trust from its own config.
 		// Both the platform guard and workspace approval hook are generated
 		// and reviewed by the platform.
-		params := map[string]any{"model": s.opts.Model, "developerInstructions": s.opts.SystemPrompt, "sandbox": "read-only", "approvalPolicy": "never", "cwd": filepath.Join(s.opts.Root, "ws"), "config": map[string]any{"bypass_hook_trust": true}}
+		params := map[string]any{"developerInstructions": s.opts.SystemPrompt, "sandbox": "read-only", "approvalPolicy": "never", "cwd": filepath.Join(s.opts.Root, "ws"), "config": map[string]any{"bypass_hook_trust": true}}
+		// An empty model leaves the choice to the CLI: local mode reuses the
+		// host's own configuration, which already names one.
+		if model := strings.TrimSpace(s.opts.Model); model != "" {
+			params["model"] = model
+		}
 		if s.opts.Workspace {
 			params["sandbox"] = "danger-full-access"
 		}

@@ -155,7 +155,7 @@ function renderWorkflowMeta(){
     return;
   }
   normalizeWorkflowNotifications(wf);
- const notificationHost=$('#workflowNotificationEditor');if(notificationHost)mountNotificationEditor(notificationHost,wf.notifications,{sourceType:'run',kind:'sop',projectId:wf.projectId||state.projectFilter},()=>dirty());
+ const notificationHost=$('#workflowNotificationEditor');if(notificationHost&&!state.localMode)mountNotificationEditor(notificationHost,wf.notifications,{sourceType:'run',kind:'sop',projectId:wf.projectId||state.projectFilter},()=>dirty());
  $('#workflowName').value=wf.name;$('#workflowDescription').value=wf.description||'';
   $('#workflowOwner').value=wf.owner||'';$('#workflowStatus').value=wf.status||'draft';$('#workflowTags').value=(wf.tags||[]).join(', ');$('#workflowMetricCategory').value=wf.metricCategory||'';$('#workflowSOPLane').value=wf.sopLane||'';
   const previewOn=!!wf.preview?.enabled, hasPreviewNode=(wf.nodes||[]).some(n=>isPreviewBuildNode(n.id));

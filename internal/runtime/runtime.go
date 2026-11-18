@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"agentflow/internal/config"
 	"agentflow/internal/domain"
 )
 
@@ -105,6 +106,17 @@ type CommandSpec struct {
 func (c CommandSpec) WithPrivateHomeDir(dir string) CommandSpec {
 	dir = strings.TrimSpace(dir)
 	if dir == "" {
+		return c
+	}
+	// Local mode runs every CLI as the signed-in operator so it reuses the
+	// CLIs' own login state and configuration (~/.codex/config.toml,
+	// ~/.codex/auth.json, ~/.claude, ~/.codebuddy). A private HOME/CODEX_HOME
+	// would point the CLI at an empty profile and turn a working host login
+	// into an authentication error.
+	if config.LocalMode() {
+		// The flag must not survive: callers read it to decide whether the
+		// CLI runs against a private profile, and here it does not.
+		c.PrivateHome = false
 		return c
 	}
 	env := make(map[string]string, len(c.environment)+2)

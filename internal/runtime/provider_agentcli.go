@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"agentflow/internal/config"
 	"agentflow/internal/domain"
 )
 
@@ -99,6 +100,17 @@ type AgentCLICommandOptions struct {
 	AgentFile string
 }
 
+// agentCLIModelArg names the model on the CLIs that address it as
+// "provider/model". A run on a personal key goes through the provider
+// ApplyAgentCLICredential adds; local mode runs on the operator's own
+// configuration instead, so the model already carries its provider there.
+func agentCLIModelArg(model string) string {
+	if config.LocalMode() {
+		return model
+	}
+	return "agentflow/" + model
+}
+
 // AgentCLICommand builds the argv of an agent CLI turn; the caller adds
 // credential bindings and the HOME policy.
 func AgentCLICommand(kind string, o AgentCLICommandOptions) CommandSpec {
@@ -124,7 +136,7 @@ func AgentCLICommand(kind string, o AgentCLICommandOptions) CommandSpec {
 	case AgentCLIOpenCode:
 		argv = []string{binary, "run", "--format", "json", "--thinking"}
 		if model != "" {
-			argv = append(argv, "-m", "agentflow/"+model)
+			argv = append(argv, "-m", agentCLIModelArg(model))
 		}
 		if resume != "" {
 			argv = append(argv, "-s", resume)
@@ -182,7 +194,7 @@ func AgentCLICommand(kind string, o AgentCLICommandOptions) CommandSpec {
 		}
 		argv = []string{binary, "--mode", "json", "--session-id", session}
 		if model != "" {
-			argv = append(argv, "--model", "agentflow/"+model)
+			argv = append(argv, "--model", agentCLIModelArg(model))
 		}
 		if effort != "" {
 			argv = append(argv, "--thinking", effort)

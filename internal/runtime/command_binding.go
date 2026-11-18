@@ -183,6 +183,15 @@ func bindCommand(sandbox Sandbox, workspace string, command CommandSpec, credent
 			}
 			bound.environment["ANTHROPIC_BASE_URL"] = claudeCodeBaseURL(credentials.ClaudeCode.BaseURL)
 		case BindAgentCLI:
+			if local {
+				// A model the operator picked comes from their own configuration:
+				// carry it to the CLI without touching the host's config files.
+				updated, err := ApplyAgentCLILocalModel(command.Provider, command.AgentCLI.Model, bound.Argv)
+				if err != nil {
+					return CommandSpec{}, err
+				}
+				bound.Argv = updated
+			}
 			if local && LocalCLILoginAvailable(command.Provider) {
 				// Host CLI login first: keep its environment and state untouched.
 				// The platform's own configuration variables stay cleared.

@@ -10,7 +10,9 @@ import (
 
 func TestSkillhubMarketMarkup(t *testing.T) {
 	view := assetsViewMarkup(t)
-	if !regexp.MustCompile(`<button type="button" data-asset-scope="skillhub" hidden>SkillHub 市场</button>`).MatchString(view) {
+	// The tab is cloud-only so the local edition hides it with the rest of the
+	// cloud navigation, and it starts hidden until the skills page reveals it.
+	if !regexp.MustCompile(`<button type="button" data-cloud-only="skillhubScope" data-asset-scope="skillhub" hidden>SkillHub 市场</button>`).MatchString(view) {
 		t.Fatal("#assetScopeSwitch needs a SkillHub tab that starts hidden until the skills page shows it")
 	}
 	for _, want := range []string{`id="skillhubMarket" class="skillhub-market" hidden`, `id="skillhubKeyword"`, `<select id="skillhubCategory" data-icon="layers"`, `<select id="skillhubSort" data-icon="sort-descending"`, `id="skillhubGrid" class="asset-grid"`, `id="skillhubPager"`, `id="skillhubDrawer"`, `id="skillhubModal"`, `id="assetSearchBox"`} {

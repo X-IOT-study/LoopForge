@@ -1721,6 +1721,7 @@ export default function App() {
             ) : null}
             {chat.ready &&
             !chat.local &&
+            !chat.localMode &&
             chat.user &&
             !chat.user.isGuest &&
             !chat.user.codeBuddyApiKeyConfigured &&
@@ -2422,6 +2423,7 @@ export default function App() {
         defaultModel={chat.model}
         sponsoredModel={chat.sponsoredModel}
         sponsoredModels={chat.sponsoredModels}
+        localMode={chat.localMode}
         onClose={() => setQuickAccessOpen(false)}
         onOpenView={(view) => navigate(view)}
         onCredentialsSaved={chat.refreshUser}

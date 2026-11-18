@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 
+	"agentflow/internal/config"
 	"agentflow/internal/domain"
 	"agentflow/internal/repo"
 
@@ -21,7 +22,29 @@ func (h *usersHandlers) users(c *gin.Context) {
 		c.JSON(http.StatusOK, []domain.User{})
 		return
 	}
-	c.JSON(http.StatusOK, domain.PublicUsers(h.repo.Users()))
+	items := h.repo.Users()
+	if config.LocalMode() {
+		items = h.deps.localModeUserList(c.Request, items)
+	}
+	c.JSON(http.StatusOK, domain.PublicUsers(items))
+}
+
+// localModeUserList narrows the account list to the signed-in local account.
+// Local mode has exactly one account and no roster: the assistant, the
+// quick-access wizard and the member pickers still need "a list of people",
+// so returning that one account keeps them working while a multi-user roster
+// stays unreachable.
+func (d deps) localModeUserList(r *http.Request, items []domain.User) []domain.User {
+	current, ok := d.requestUser(r, false)
+	if !ok {
+		return []domain.User{}
+	}
+	for _, item := range items {
+		if item.ID == current.ID {
+			return []domain.User{item}
+		}
+	}
+	return []domain.User{}
 }
 
 func (h *usersHandlers) user(c *gin.Context) {

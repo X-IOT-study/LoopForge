@@ -63,6 +63,10 @@ const panel={set innerHTML(v){panelRenders++},querySelector(s){return {'[data-cr
 const $=s=>({'#credentialPanel':panel,'[data-credential-row="gitToken"]':row,'#credentialPanel [data-credential-row="gitToken"]':row}[s]??null);
 const document={createElement(){const holder={set innerHTML(v){holder.firstElementChild={html:v}}};return holder},querySelectorAll:()=>[]};
 const window={};
+// The credential panel filters out executors the local edition does not offer;
+// that helper lives in app/agents.js, which this slice does not load.
+const LOCAL_MODE_HIDDEN_EXECUTORS=new Set(['kimi','zcode']);
+const localModeExecutorHidden=kind=>!!state.localMode&&LOCAL_MODE_HIDDEN_EXECUTORS.has(String(kind||'').trim());
 eval(code.slice(code.indexOf('const CREDENTIAL_GROUPS='),code.indexOf('// 谁能改通用模板')));
 (async()=>{
  const channel=listenForGongfengOAuth();

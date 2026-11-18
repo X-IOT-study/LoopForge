@@ -35,14 +35,18 @@ export default function ExecutionMachinePicker({ chat, onManage }) {
       : "加载执行机器…"
     : runnerId
       ? machine?.name || runnerId
-      : "LoopForge 云端";
+      : chat.localMode
+        ? "本机"
+        : "LoopForge 云端";
   const online =
     known &&
     (runnerId
       ? machine?.status === "online"
-      : chat.cloudPool?.configured
-        ? chat.cloudPool.online > 0
-        : true);
+      : chat.localMode
+        ? true
+        : chat.cloudPool?.configured
+          ? chat.cloudPool.online > 0
+          : true);
   const title = locked
     ? loadError || `当前会话执行机器：${label}。会话已绑定，后续运行始终使用此机器。`
     : chat.machineError || "选择执行机器，发送首条消息后固定";
@@ -60,10 +64,11 @@ export default function ExecutionMachinePicker({ chat, onManage }) {
     ? [
         {
           id: "",
-          label: "LoopForge 云端",
+          label: chat.localMode ? "本机" : "LoopForge 云端",
           icon: "server",
-          description:
-            chat.cloudPool?.configured && !chat.cloudPool.online
+          description: chat.localMode
+            ? "本机直接执行"
+            : chat.cloudPool?.configured && !chat.cloudPool.online
               ? "暂无在线机器"
               : "平台自动分配",
         },
