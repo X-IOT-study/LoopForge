@@ -1,4 +1,4 @@
-.PHONY: run test test-mysql clean-mysql build build-chatbot build-gate-mcp coverage coverage-go coverage-chatbot coverage-web coverage-e2e
+.PHONY: run test test-mysql clean-mysql build build-chatbot build-gate-mcp build-local local local-stop local-status coverage coverage-go coverage-chatbot coverage-web coverage-e2e
 
 GOCACHE ?= /tmp/agentflow-gocache
 # Use the local toolchain; go.mod requires go >= 1.26.11.
@@ -63,6 +63,19 @@ build: build-chatbot
 
 build-chatbot:
 	bash scripts/build-chatbot.sh
+
+# The local-only edition: two binaries, host process, Compose MySQL only.
+build-local:
+	bash scripts/build-local.sh
+
+local:
+	bash scripts/start-local.sh start
+
+local-stop:
+	bash scripts/start-local.sh stop
+
+local-status:
+	bash scripts/start-local.sh status
 
 build-gate-mcp:
 	mkdir -p bin

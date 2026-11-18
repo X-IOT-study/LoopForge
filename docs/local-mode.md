@@ -56,9 +56,37 @@ Starting the whole stack with `docker compose up -d` also brings up the `platfor
 
 The process refuses any non-loopback listen address unless `AGENTFLOW_LOCAL_ALLOW_REMOTE=1`; the guard exists to keep a single-user instance unexposed, not to make a container deployment work. Compose's `platform` service defaults to `AGENTFLOW_LOCAL_SANDBOX=docker`, which is exactly why local mode runs the binary on the host instead of that service.
 
+## Quick start scripts
+
+Two scripts cover the whole loop, so the commands above are only needed when you want to do a step by hand.
+
+```bash
+bash scripts/build-local.sh     # build .local/bin/agentflow and .local/bin/agentflow-mcp
+bash scripts/start-local.sh     # database, starter catalog, binary, background process
+```
+
+`make build-local`, `make local`, `make local-stop` and `make local-status` call the same two scripts.
+
+`build-local.sh` builds just this edition's two binaries: the server (which embeds the web UI) and the stdio MCP server. The runner and gate MCP binaries are platform pieces with no role here. It rebuilds `web/native-chat` only when the frontend sources are newer than the bundle, picks a Go toolchain that satisfies the `go` line in `go.mod` (a distribution Go that is too old is skipped, not used), and accepts:
+
+- `SKIP_FRONTEND=1` — reuse the existing bundle.
+- `FORCE_FRONTEND=1` — rebuild the bundle even when it looks fresh.
+- `GO=/path/to/go` — use that toolchain.
+- a first argument — the output directory (default `.local/bin`).
+
+`start-local.sh` takes `start` (default), `stop`, `restart`, `status` or `logs`, plus `--foreground` to run attached to the terminal instead of in the background. On start it:
+
+1. creates `.env` with `scripts/configure.sh` when it is missing, then sources it;
+2. starts the Compose MySQL and waits for its health check;
+3. builds the binaries when they are missing;
+4. runs `AGENTFLOW_LOCAL_MODE=1` on `127.0.0.1:$AGENTFLOW_HTTP_PORT`, with the pid file, log and workspaces under `$LOOPFORGE_DATA_DIR/local/` (`.data/local` by default);
+5. applies the schema extensions and the starter catalog — this has to happen after the process is up, because the tables come from its own migration, and it is what keeps the project and SOP lists from starting empty (see the next section).
+
+Set `AGENTFLOW_MYSQL_DSN` in the calling environment to point at a database you already have; the script then leaves Compose alone and skips the starter catalog, so you apply `migrations/seed/*.sql` yourself.
+
 ## Seed the catalog
 
-The installer (`scripts/dev.sh`, `scripts/install-schema-extensions.sh`, `scripts/test-container.sh`) applies `migrations/seed/*.sql` for you. The host-process command above does **not**: it only connects and runs the incremental `AutoMigrate` DDL (`repo.Open` never seeds, see `AGENTS.md`). Without the seed the database is structurally fine but empty — no generic templates, no agents, no rules, no sandboxes, no sample project — so SOP lists, the project wizard's default-SOP dropdown and most settings pages render blank.
+The installer (`scripts/dev.sh`, `scripts/install-schema-extensions.sh`, `scripts/test-container.sh`) applies `migrations/seed/*.sql` for you, and so does `scripts/start-local.sh`, right after the first start. The host-process command above does **not**: it only connects and runs the incremental `AutoMigrate` DDL (`repo.Open` never seeds, see `AGENTS.md`). Without the seed the database is structurally fine but empty — no generic templates, no agents, no rules, no sandboxes, no sample project — so SOP lists, the project wizard's default-SOP dropdown and most settings pages render blank.
 
 Apply them once, after `docker compose up -d mysql` and before the first sign-in (each file is `INSERT IGNORE`, so re-running is harmless):
 
